@@ -1,14 +1,13 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { 
-  BarChart3, Users, Globe, Clock, ArrowUpRight, ArrowDownRight, Search,
-  LayoutDashboard, PieChart as PieChartIcon, Settings, HelpCircle, TrendingUp,
-  Award, Menu, RefreshCw, Minus
+  Users, Globe, Clock, ArrowUpRight, ArrowDownRight, Search,
+  TrendingUp, Menu, RefreshCw, Minus, ExternalLink
 } from 'lucide-react';
 import { 
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell
 } from 'recharts';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { tezosService, DomainStats, ActivityItem, ChartData, ExtensionData } from '../lib/tezos';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card';
 import { Button } from './ui/button';
@@ -16,6 +15,8 @@ import { Input } from './ui/input';
 import { Badge } from './ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { Sheet, SheetContent, SheetTrigger } from './ui/sheet';
+import { SidebarContent } from './Sidebar';
+import { captureAffiliateFromUrl, trackAffiliateLinkClick } from '../lib/affiliateTracking';
 
 const POLL_INTERVAL = 30_000; // 30 seconds
 
@@ -46,6 +47,7 @@ export function TezosDashboard() {
   const [lastUpdatedText, setLastUpdatedText] = useState('');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('Dashboard');
+  const [ready, setReady] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadData = useCallback(async (isInitial = false) => {
@@ -74,9 +76,17 @@ export function TezosDashboard() {
     }
   }, []);
 
+  // Capture affiliate params on mount
+  useEffect(() => {
+    captureAffiliateFromUrl();
+  }, []);
+
   // Initial load
   useEffect(() => {
-    loadData(true);
+    loadData(true).then(() => {
+      // Small delay to let React commit the DOM before revealing
+      requestAnimationFrame(() => setReady(true));
+    });
   }, [loadData]);
 
   // Auto-refresh polling every 30s
@@ -97,52 +107,16 @@ export function TezosDashboard() {
     return () => clearInterval(tick);
   }, [lastUpdated]);
 
-  if (loading) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-background">
-        <div className="flex flex-col items-center gap-4">
-          <div className="h-16 w-16 animate-spin rounded-full border-4 border-primary border-t-transparent shadow-[0_0_20px_rgba(44,125,247,0.3)]"></div>
-          <p className="text-muted-foreground animate-pulse font-medium">Loading live data from TzKT&hellip;</p>
-        </div>
-      </div>
-    );
-  }
+  /** Helper to track clicks on outbound affiliate / partner links */
+  const handleAffiliateClick = useCallback((url: string, label: string) => {
+    trackAffiliateLinkClick(url, label);
+    window.open(url, '_blank', 'noopener');
+  }, []);
 
-  const SidebarContent = () => (
-    <div className="flex flex-col h-full">
-      <div className="p-6 border-b flex items-center gap-3">
-        <div className="bg-primary/20 p-2 rounded-lg">
-          <Globe className="w-6 h-6 text-primary" />
-        </div>
-        <span className="font-bold text-xl tracking-tight">TD Insight</span>
-      </div>
-      <nav className="flex-1 p-4 space-y-2">
-        {[
-          { icon: LayoutDashboard, label: 'Dashboard' },
-          { icon: BarChart3, label: 'Marketplace' },
-          { icon: PieChartIcon, label: 'Distribution' },
-          { icon: Award, label: 'Leaderboards' },
-        ].map((item) => (
-          <Button 
-            key={item.label} variant="ghost" 
-            onClick={() => { setActiveTab(item.label); setMobileMenuOpen(false); }}
-            className={`w-full justify-start gap-3 ${activeTab === item.label ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'}`}
-          >
-            <item.icon className="w-4 h-4" />
-            {item.label}
-          </Button>
-        ))}
-      </nav>
-      <div className="p-4 border-t space-y-2">
-        <Button variant="ghost" className="w-full justify-start gap-3 text-muted-foreground">
-          <Settings className="w-4 h-4" /> Settings
-        </Button>
-        <Button variant="ghost" className="w-full justify-start gap-3 text-muted-foreground">
-          <HelpCircle className="w-4 h-4" /> Support
-        </Button>
-      </div>
-    </div>
-  );
+  const handleTabChange = useCallback((tab: string) => {
+    setActiveTab(tab);
+    setMobileMenuOpen(false);
+  }, []);
 
   const statCards = [
     { label: 'Total Registered', value: stats?.totalDomains?.toLocaleString() || '0', ...formatChange(stats?.totalDomainsChange), icon: Globe },
@@ -155,7 +129,7 @@ export function TezosDashboard() {
     <div className="flex h-screen bg-background overflow-hidden">
       {/* Desktop Sidebar */}
       <aside className="w-64 border-r bg-card hidden lg:flex flex-col">
-        <SidebarContent />
+        <SidebarContent activeTab={activeTab} onTabChange={handleTabChange} />
       </aside>
 
       {/* Main Content */}
@@ -169,7 +143,7 @@ export function TezosDashboard() {
                 </Button>
               </SheetTrigger>
               <SheetContent side="left" className="p-0 w-64">
-                <SidebarContent />
+                <SidebarContent activeTab={activeTab} onTabChange={handleTabChange} />
               </SheetContent>
             </Sheet>
             <div>
@@ -203,8 +177,22 @@ export function TezosDashboard() {
           </div>
         </header>
 
-        {activeTab === 'Dashboard' ? (
-          <>
+        <AnimatePresence mode="wait">
+        {loading && !ready ? (
+          <motion.div
+            key="loader"
+            initial={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.25 }}
+            className="flex items-center justify-center min-h-[60vh]"
+          >
+            <div className="flex flex-col items-center gap-4">
+              <div className="h-16 w-16 animate-spin rounded-full border-4 border-primary border-t-transparent shadow-[0_0_20px_rgba(44,125,247,0.3)]" />
+              <p className="text-muted-foreground animate-pulse font-medium">Loading live data from TzKT&hellip;</p>
+            </div>
+          </motion.div>
+        ) : activeTab === 'Dashboard' ? (
+          <motion.div key="dashboard" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.35 }}>
             {/* Stats Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
               {statCards.map((stat, i) => (
@@ -402,9 +390,40 @@ export function TezosDashboard() {
                 </CardContent>
               </Card>
             </motion.div>
-          </>
+
+            {/* Affiliate / Partner Links Section */}
+            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.9 }} className="mt-8">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Quick Links</CardTitle>
+                  <CardDescription>Useful Tezos Domains resources</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex flex-wrap gap-3">
+                    {[
+                      { label: 'Register a Domain', url: 'https://tezos.domains' },
+                      { label: 'TzKT Explorer', url: 'https://tzkt.io' },
+                      { label: 'Tezos.Domains Docs', url: 'https://docs.tezos.domains' },
+                      { label: 'Objkt Marketplace', url: 'https://objkt.com' },
+                    ].map((link) => (
+                      <Button
+                        key={link.label}
+                        variant="outline"
+                        size="sm"
+                        className="gap-2"
+                        onClick={() => handleAffiliateClick(link.url, link.label)}
+                      >
+                        {link.label}
+                        <ExternalLink className="w-3 h-3" />
+                      </Button>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            </motion.div>
+          </motion.div>
         ) : (
-          <div className="flex flex-col items-center justify-center min-h-[400px] gap-4">
+          <motion.div key={activeTab} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.3 }} className="flex flex-col items-center justify-center min-h-[400px] gap-4">
             <div className="bg-secondary p-4 rounded-full">
               <Globe className="w-12 h-12 text-muted-foreground" />
             </div>
@@ -413,8 +432,9 @@ export function TezosDashboard() {
               We are working hard to bring you more detailed {activeTab.toLowerCase()} insights. Stay tuned for updates!
             </p>
             <Button onClick={() => setActiveTab('Dashboard')}>Back to Dashboard</Button>
-          </div>
+          </motion.div>
         )}
+        </AnimatePresence>
       </main>
     </div>
   );
