@@ -247,4 +247,39 @@ export const tezosService = {
       { name: '.tez', value: 100, color: 'hsl(var(--primary))' },
     ];
   },
+
+  async getAffiliateStats(): Promise<{ code: string; visits: number; clicks: number; conversions: number }[]> {
+    try {
+      // For a production app, we would use a SQL aggregate or separate counters.
+      // Since blink.db.sql() is restricted to server-side, and client side list() is limited,
+      // we'll fetch the recent events and aggregate them manually.
+      // In a real high-volume app, we'd use a summary table or Edge Function.
+      const events = await blink.db.affiliateEvents.list({
+        limit: 1000,
+        orderBy: { timestamp: 'desc' }
+      });
+
+      if (!events || events.length === 0) return [];
+
+      const stats: Record<string, { visits: number; clicks: number; conversions: number }> = {};
+
+      for (const event of events) {
+        const code = event.affiliateCode;
+        if (!stats[code]) {
+          stats[code] = { visits: 0, clicks: 0, conversions: 0 };
+        }
+
+        if (event.eventType === 'visit') stats[code].visits++;
+        else if (event.eventType === 'click') stats[code].clicks++;
+        else if (event.eventType === 'conversion') stats[code].conversions++;
+      }
+
+      return Object.entries(stats)
+        .sort(([, a], [, b]) => b.visits - a.visits)
+        .map(([code, data]) => ({ code, ...data }));
+    } catch (err) {
+      console.error('Failed to fetch affiliate stats:', err);
+      return [];
+    }
+  },
 };

@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Users, Globe, Clock, ArrowUpRight, ArrowDownRight, Search,
-  TrendingUp, Menu, RefreshCw, Minus, ExternalLink
+  TrendingUp, Menu, RefreshCw, Minus, ExternalLink, Users2,
+  MousePointer2, Target, Zap
 } from 'lucide-react';
 import { 
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -41,6 +42,7 @@ export function TezosDashboard() {
   const [growthData, setGrowthData] = useState<ChartData[]>([]);
   const [topHolders, setTopHolders] = useState<{ address: string; count: number }[]>([]);
   const [extensions, setExtensions] = useState<ExtensionData[]>([]);
+  const [affiliateStats, setAffiliateStats] = useState<{ code: string; visits: number; clicks: number; conversions: number }[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -55,18 +57,20 @@ export function TezosDashboard() {
     else setRefreshing(true);
 
     try {
-      const [s, a, g, h, e] = await Promise.all([
+      const [s, a, g, h, e, aff] = await Promise.all([
         tezosService.getStats(),
         tezosService.getRecentActivity(),
         tezosService.getGrowthData(),
         tezosService.getTopHolders(),
-        tezosService.getExtensionDistribution()
+        tezosService.getExtensionDistribution(),
+        tezosService.getAffiliateStats()
       ]);
       setStats(s);
       setActivity(a);
       setGrowthData(g);
       setTopHolders(h);
       setExtensions(e);
+      setAffiliateStats(aff);
       setLastUpdated(new Date());
     } catch (err) {
       console.error('Failed to load data:', err);
@@ -153,6 +157,7 @@ export function TezosDashboard() {
                 {activeTab === 'Marketplace' && 'Explore recent sales and pricing trends'}
                 {activeTab === 'Distribution' && 'Domain extension and ownership breakdown'}
                 {activeTab === 'Leaderboards' && 'Top collectors in the Tezos community'}
+                {activeTab === 'Affiliates' && 'Track referral performance and partner activity'}
               </p>
             </div>
           </div>

@@ -99,6 +99,14 @@ export function trackAffiliateConversion(
     time_since_visit_ms: Date.now() - new Date(affiliate.timestamp).getTime(),
     ...metadata,
   });
+
+  // Save to DB
+  blink.db.affiliateEvents.create({
+    affiliateCode: affiliate.code,
+    eventType: 'conversion',
+    conversionType: conversionType,
+    timestamp: new Date().toISOString(),
+  }).catch(err => console.error('Failed to log affiliate conversion to DB:', err));
 }
 
 /** Clear affiliate data (e.g., after conversion or expiry) */

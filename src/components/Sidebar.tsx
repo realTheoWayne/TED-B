@@ -1,4 +1,4 @@
-import { Globe, LayoutDashboard, BarChart3, PieChart, Award, Settings, HelpCircle } from 'lucide-react';
+import { Globe, LayoutDashboard, BarChart3, PieChart, Award, Settings, HelpCircle, Users2 } from 'lucide-react';
 import { Button } from './ui/button';
 
 const navItems = [
@@ -6,6 +6,7 @@ const navItems = [
   { icon: BarChart3, label: 'Marketplace' },
   { icon: PieChart, label: 'Distribution' },
   { icon: Award, label: 'Leaderboards' },
+  { icon: Users2, label: 'Affiliates' },
 ];
 
 interface SidebarContentProps {
