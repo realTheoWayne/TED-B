@@ -1,3 +1,5 @@
+import { blink } from './blink';
+
 export interface DomainStats {
   totalDomains: number;
   new24h: number;
