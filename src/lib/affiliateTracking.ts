@@ -100,13 +100,8 @@ export function trackAffiliateConversion(
     ...metadata,
   });
 
-  // Save to DB
-  blink.db.affiliateEvents.create({
-    affiliateCode: affiliate.code,
-    eventType: 'conversion',
-    conversionType: conversionType,
-    timestamp: new Date().toISOString(),
-  }).catch(err => console.error('Failed to log affiliate conversion to DB:', err));
+  // Note: DB write requires auth (RLS owner mode). For unauthenticated visitors,
+  // the analytics event above is the primary tracking mechanism.
 }
 
 /** Clear affiliate data (e.g., after conversion or expiry) */
