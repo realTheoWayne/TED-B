@@ -1,8 +1,10 @@
-import { Globe, LayoutDashboard, BarChart3, PieChart, Award, Settings, HelpCircle, Users2 } from 'lucide-react';
+import { Globe, LayoutDashboard, BarChart3, PieChart, Award, Settings, HelpCircle, Users2, FileCode } from 'lucide-react';
 import { Button } from './ui/button';
+import { Badge } from './ui/badge';
 
 const navItems = [
   { icon: LayoutDashboard, label: 'Dashboard' },
+  { icon: FileCode, label: '.Page', badge: 'New' },
   { icon: BarChart3, label: 'Marketplace' },
   { icon: PieChart, label: 'Distribution' },
   { icon: Award, label: 'Leaderboards' },
@@ -29,10 +31,15 @@ export function SidebarContent({ activeTab, onTabChange }: SidebarContentProps) 
             key={item.label}
             variant="ghost"
             onClick={() => onTabChange(item.label)}
-            className={`w-full justify-start gap-3 ${activeTab === item.label ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'}`}
+            className={`w-full justify-start gap-3 relative ${activeTab === item.label ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'}`}
           >
             <item.icon className="w-4 h-4" />
             {item.label}
+            {item.badge && (
+              <Badge className="ml-auto bg-primary/20 text-primary hover:bg-primary/30 border-none h-4 px-1.5 text-[10px] uppercase font-bold tracking-wider">
+                {item.badge}
+              </Badge>
+            )}
           </Button>
         ))}
       </nav>

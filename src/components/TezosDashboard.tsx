@@ -17,6 +17,7 @@ import { Badge } from './ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { Sheet, SheetContent, SheetTrigger } from './ui/sheet';
 import { SidebarContent } from './Sidebar';
+import TezPageDashboard from './TezPageDashboard';
 import { captureAffiliateFromUrl, trackAffiliateLinkClick } from '../lib/affiliateTracking';
 
 const POLL_INTERVAL = 30_000; // 30 seconds
@@ -158,6 +159,7 @@ export function TezosDashboard() {
                 {activeTab === 'Distribution' && 'Domain extension and ownership breakdown'}
                 {activeTab === 'Leaderboards' && 'Top collectors in the Tezos community'}
                 {activeTab === 'Affiliates' && 'Track referral performance and partner activity'}
+                {activeTab === '.Page' && 'View detailed page analytics'}
               </p>
             </div>
           </div>
@@ -426,6 +428,10 @@ export function TezosDashboard() {
                 </CardContent>
               </Card>
             </motion.div>
+          </motion.div>
+        ) : activeTab === '.Page' ? (
+          <motion.div key="tez-page" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.35 }}>
+            <TezPageDashboard />
           </motion.div>
         ) : (
           <motion.div key={activeTab} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.3 }} className="flex flex-col items-center justify-center min-h-[400px] gap-4">
