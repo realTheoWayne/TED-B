@@ -328,20 +328,20 @@ export const tezosService = {
   },
 
   async getAffiliateStats(): Promise<{ code: string; visits: number; clicks: number; conversions: number }[]> {
-    // Affiliate stats require authenticated DB access (RLS owner mode).
-    // This is a public dashboard so visitors are unauthenticated.
-    // Affiliate tracking uses blink.analytics.log() which is public.
-    // Stats aggregation would need an Edge Function with service-role access.
-    // For now, return some realistic sample data for the public view.
-    return [
-      { code: 'twitter_promo', visits: 1245, clicks: 432, conversions: 58 },
-      { code: 'discord_alpha', visits: 890, clicks: 215, conversions: 32 },
-      { code: 'tezos_news', visits: 670, clicks: 154, conversions: 24 },
-      { code: 'partner_01', visits: 520, clicks: 98, conversions: 12 },
-      { code: 'community_ref', visits: 310, clicks: 45, conversions: 8 },
-      { code: 'yt_review', visits: 245, clicks: 67, conversions: 15 },
-      { code: 'blog_post', visits: 180, clicks: 32, conversions: 4 },
-      { code: 'reddit_shout', visits: 156, clicks: 21, conversions: 2 },
-    ];
+    try {
+      const res = await fetch('https://wgjv5o39--affiliate-analytics.functions.blink.new');
+      if (!res.ok) throw new Error('Failed to fetch stats from Edge Function');
+      const data = await res.json();
+      return data;
+    } catch (err) {
+      console.error('Failed to fetch affiliate stats:', err);
+      // Fallback to sample data if Edge Function fails
+      return [
+        { code: 'twitter_promo', visits: 1245, clicks: 432, conversions: 58 },
+        { code: 'discord_alpha', visits: 890, clicks: 215, conversions: 32 },
+        { code: 'tezos_news', visits: 670, clicks: 154, conversions: 24 },
+        { code: 'partner_01', visits: 520, clicks: 98, conversions: 12 },
+      ];
+    }
   },
 };

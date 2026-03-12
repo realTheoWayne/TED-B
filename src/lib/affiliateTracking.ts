@@ -13,6 +13,8 @@ export interface AffiliateInfo {
 
 const STORAGE_KEY = 'td_affiliate';
 
+const AFFILIATE_ANALYTICS_URL = 'https://wgjv5o39--affiliate-analytics.functions.blink.new';
+
 /** Capture affiliate code from URL on first visit */
 export function captureAffiliateFromUrl(): AffiliateInfo | null {
   if (typeof window === 'undefined') return null;
@@ -44,6 +46,16 @@ export function captureAffiliateFromUrl(): AffiliateInfo | null {
         referrer: document.referrer || 'direct',
         full_url: window.location.href,
       });
+
+      // Log to our custom tracker via Edge Function (publicly accessible)
+      fetch(`${AFFILIATE_ANALYTICS_URL}/log`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          affiliateCode: code,
+          eventType: 'visit'
+        })
+      }).catch(err => console.error('Failed to log affiliate visit to Edge Function:', err));
 
       return info;
     }
@@ -79,6 +91,19 @@ export function trackAffiliateLinkClick(
     affiliate_code: affiliate?.code ?? 'none',
     ...metadata,
   });
+
+  if (affiliate?.code) {
+    fetch(`${AFFILIATE_ANALYTICS_URL}/log`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        affiliateCode: affiliate.code,
+        eventType: 'click',
+        targetUrl: linkUrl,
+        label: linkLabel
+      })
+    }).catch(err => console.error('Failed to log affiliate click to Edge Function:', err));
+  }
 }
 
 /**
@@ -100,8 +125,16 @@ export function trackAffiliateConversion(
     ...metadata,
   });
 
-  // Note: DB write requires auth (RLS owner mode). For unauthenticated visitors,
-  // the analytics event above is the primary tracking mechanism.
+  // Log to our custom tracker via Edge Function (publicly accessible)
+  fetch(`${AFFILIATE_ANALYTICS_URL}/log`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      affiliateCode: affiliate.code,
+      eventType: 'conversion',
+      conversionType: conversionType
+    })
+  }).catch(err => console.error('Failed to log affiliate conversion to Edge Function:', err));
 }
 
 /** Clear affiliate data (e.g., after conversion or expiry) */
