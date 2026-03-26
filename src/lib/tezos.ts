@@ -39,11 +39,32 @@ export interface TezPageSite {
   timestamp?: string;
 }
 
+export interface AffiliatePartner {
+  address: string;
+  buys: number;
+  renewals: number;
+  totalOps: number;
+  volumeXtz: number;
+  uniqueDomains: number;
+  lastActive: string;
+}
+
+export interface AffiliateOp {
+  id: string;
+  type: 'buy' | 'renew';
+  domain: string;
+  affiliate: string;
+  sender: string;
+  amount: number;
+  timestamp: string;
+}
+
 const TZKT_API = 'https://api.tzkt.io/v1';
 const TEZOS_DOMAINS_API = 'https://api.tezos.domains/graphql';
 const BUY_CONTRACT = 'KT191reDVKrLxU9rjTSxg53wRqj6zh8pnHgr';
 const RENEW_CONTRACT = 'KT1EVYBj3f1rZHNeUtq4ZvVxPTs77wuHwARU';
 const NAME_REGISTRY = 'KT1GBZm7uJvYvHvKZGJ61eA8XF6pAByN8Mv8';
+const AFFILIATE_CONTRACT = 'KT1Hg3ymQBL5nfAbb1JZ8G8AGPZ4cpcko2H2';
 
 function hexToUtf8(hex: string): string {
   try {
@@ -327,21 +348,85 @@ export const tezosService = {
     };
   },
 
-  async getAffiliateStats(): Promise<{ code: string; visits: number; clicks: number; conversions: number }[]> {
+  /**
+   * Fetch real on-chain affiliate data from the Tezos Domains
+   * AffiliateBuyRenew contract (KT1Hg3ymQBL5nfAbb1JZ8G8AGPZ4cpcko2H2).
+   * Every buy/renew through this contract includes an `affiliate` address param.
+   * We query TzKT for all transactions to this contract and aggregate by affiliate address.
+   */
+  async getAffiliateOnChainData(): Promise<AffiliatePartner[]> {
     try {
-      const res = await fetch('https://wgjv5o39--affiliate-analytics.functions.blink.new');
-      if (!res.ok) throw new Error('Failed to fetch stats from Edge Function');
-      const data = await res.json();
-      return data;
+      const ops = await fetchJson<any[]>(
+        `${TZKT_API}/operations/transactions?target=${AFFILIATE_CONTRACT}&status=applied&limit=10000&select=sender,parameter,amount,timestamp&sort.desc=id`
+      );
+
+      if (!Array.isArray(ops) || ops.length === 0) return [];
+
+      const affiliates: Record<string, { buys: number; renewals: number; volumeMutez: number; domains: Set<string>; lastActive: string }> = {};
+
+      for (const op of ops) {
+        const affiliateAddr = op.parameter?.value?.affiliate;
+        const entrypoint = op.parameter?.entrypoint;
+        const label = op.parameter?.value?.label;
+
+        if (!affiliateAddr || typeof affiliateAddr !== 'string') continue;
+
+        if (!affiliates[affiliateAddr]) {
+          affiliates[affiliateAddr] = { buys: 0, renewals: 0, volumeMutez: 0, domains: new Set(), lastActive: '' };
+        }
+
+        const entry = affiliates[affiliateAddr];
+        if (entrypoint === 'buy') entry.buys++;
+        else if (entrypoint === 'renew') entry.renewals++;
+        entry.volumeMutez += (op.amount || 0);
+        if (label) entry.domains.add(label);
+        if (!entry.lastActive || op.timestamp > entry.lastActive) {
+          entry.lastActive = op.timestamp;
+        }
+      }
+
+      return Object.entries(affiliates)
+        .map(([address, data]) => ({
+          address,
+          buys: data.buys,
+          renewals: data.renewals,
+          totalOps: data.buys + data.renewals,
+          volumeXtz: Math.round(data.volumeMutez / 1_000_000 * 100) / 100,
+          uniqueDomains: data.domains.size,
+          lastActive: data.lastActive,
+        }))
+        .sort((a, b) => b.totalOps - a.totalOps);
     } catch (err) {
-      console.error('Failed to fetch affiliate stats:', err);
-      // Fallback to sample data if Edge Function fails
-      return [
-        { code: 'twitter_promo', visits: 1245, clicks: 432, conversions: 58 },
-        { code: 'discord_alpha', visits: 890, clicks: 215, conversions: 32 },
-        { code: 'tezos_news', visits: 670, clicks: 154, conversions: 24 },
-        { code: 'partner_01', visits: 520, clicks: 98, conversions: 12 },
-      ];
+      console.error('Failed to fetch on-chain affiliate data:', err);
+      return [];
+    }
+  },
+
+  async getAffiliateRecentOps(): Promise<AffiliateOp[]> {
+    try {
+      const ops = await fetchJson<any[]>(
+        `${TZKT_API}/operations/transactions?target=${AFFILIATE_CONTRACT}&status=applied&limit=25&sort.desc=id`
+      );
+
+      if (!Array.isArray(ops) || ops.length === 0) return [];
+
+      return ops
+        .filter((op: any) => op.parameter?.value?.affiliate)
+        .map((op: any) => {
+          const label = op.parameter?.value?.label;
+          return {
+            id: String(op.id),
+            type: op.parameter?.entrypoint === 'buy' ? 'buy' as const : 'renew' as const,
+            domain: label ? `${hexToUtf8(label)}.tez` : 'unknown.tez',
+            affiliate: op.parameter.value.affiliate,
+            sender: op.sender?.address || 'unknown',
+            amount: (op.amount || 0) / 1_000_000,
+            timestamp: op.timestamp,
+          };
+        });
+    } catch (err) {
+      console.error('Failed to fetch recent affiliate ops:', err);
+      return [];
     }
   },
 };
