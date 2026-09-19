@@ -65,6 +65,7 @@ export const Route = createRootRoute({
     links: [
       { rel: 'stylesheet', href: indexCss },
       { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' },
+      { rel: 'shortcut icon', type: 'image/svg+xml', href: '/favicon.svg' },
     ],
   }),
   shellComponent: RootDocument,

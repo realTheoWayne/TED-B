@@ -132,7 +132,7 @@ export function TezosDashboard() {
     { label: 'Total Registered', value: stats?.totalDomains?.toLocaleString() || '—', ...formatChange(stats?.totalDomainsChange), icon: Globe },
     { label: 'New (24h)', value: stats?.new24h?.toLocaleString() || '—', ...formatChange(stats?.new24hChange), icon: TrendingUp },
     { label: 'Renewals (24h)', value: stats?.renewals24h?.toLocaleString() || '—', ...formatChange(stats?.renewalsChange), icon: Clock },
-    { label: 'Unique Owners', value: stats?.uniqueOwners?.toLocaleString() || '—', ...formatChange(stats?.uniqueOwnersChange), icon: Users },
+    { label: 'Unique Owners (live sample)', value: stats?.uniqueOwners?.toLocaleString() || '—', ...formatChange(stats?.uniqueOwnersChange), icon: Users },
   ];
 
   return (
@@ -230,6 +230,9 @@ export function TezosDashboard() {
                       <div>
                         <p className="text-sm font-medium text-muted-foreground">{stat.label}</p>
                         <h3 className="text-2xl font-bold">{stat.value}</h3>
+                        {stat.label.includes('live sample') && (
+                          <p className="mt-1 text-[11px] text-muted-foreground">Distinct owners in the latest API page</p>
+                        )}
                       </div>
                     </CardContent>
                   </Card>

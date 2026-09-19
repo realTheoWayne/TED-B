@@ -61,6 +61,7 @@ export interface AffiliateOp {
 interface DomainRecord {
   name: string;
   owner: string;
+  label?: string;
   data: Array<{ key: string; value: unknown; rawValue: string }>;
 }
 
@@ -68,6 +69,12 @@ interface DomainSnapshot {
   totalCount: number;
   domains: DomainRecord[];
   owners: Record<string, number>;
+}
+
+interface DomainConnectionResponse {
+  totalCount: number;
+  items: DomainRecord[];
+  pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
 }
 
 const TZKT_API = 'https://api.tzkt.io/v1';
@@ -217,7 +224,7 @@ async function fetchDomainSnapshot(): Promise<DomainSnapshot> {
     const query = `query {
       domains(first: 50, order: { field: LEVEL, direction: DESC }) {
         totalCount
-        items { name owner data { key value rawValue } }
+        items { name owner label data { key value rawValue } }
         pageInfo { hasNextPage endCursor }
       }
     }`;
@@ -236,6 +243,8 @@ async function fetchDomainSnapshot(): Promise<DomainSnapshot> {
       if (domain.owner) owners[domain.owner] = (owners[domain.owner] || 0) + 1;
     }
 
+    // Keep the API response honest: the connection is capped at 50 domains,
+    // so this is a sample of distinct owners, not the ecosystem-wide total.
     const value = { totalCount: response.data.domains.totalCount, domains, owners };
     domainSnapshotCache = { loadedAt: Date.now(), value };
     return value;
@@ -277,7 +286,10 @@ export const tezosService = {
       totalDomains: snapshot.totalCount,
       new24h: buysLast24h,
       renewals24h: renewsLast24h,
-      uniqueOwners: null,
+      // The public GraphQL API exposes the total domain count, but not an
+      // aggregate owner count. Use the distinct owners in the fetched live
+      // page rather than rendering an empty metric or inventing a total.
+      uniqueOwners: Object.keys(snapshot.owners).length,
       totalDomainsChange: null,
       new24hChange: pct(buysLast24h, buysPrev24h),
       renewalsChange: pct(renewsLast24h, renewsPrev24h),
