@@ -93,23 +93,115 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   return JSON.parse(text) as T;
 }
 
-async function fetchTzktTransactions(query: string, pageSize = 10000): Promise<any[]> {
+/**
+ * TzKT rate-limits bursts from a browser, and the dashboard used to fire the
+ * same buy/renew queries from several widgets at once. Serialize requests,
+ * reuse in-flight work, and back off on 429s so a refresh does not turn into a
+ * cascade of failed requests.
+ */
+let tzktQueue: Promise<unknown> = Promise.resolve();
+let lastTzktRequestAt = 0;
+const TZKT_MIN_INTERVAL = 750;
+const tzktCache = new Map<string, { expiresAt: number; value: unknown }>();
+const tzktRequests = new Map<string, Promise<unknown>>();
+
+function wait(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchTzktJson<T>(url: string, cacheMs = 60_000): Promise<T> {
+  const cached = tzktCache.get(url);
+  if (cached && cached.expiresAt > Date.now()) return cached.value as T;
+
+  const inFlight = tzktRequests.get(url);
+  if (inFlight) return inFlight as Promise<T>;
+
+  const run = async (): Promise<T> => {
+    let attempt = 0;
+    while (attempt < 3) {
+      const elapsed = Date.now() - lastTzktRequestAt;
+      if (elapsed < TZKT_MIN_INTERVAL) await wait(TZKT_MIN_INTERVAL - elapsed);
+      lastTzktRequestAt = Date.now();
+
+      const response = await fetch(url);
+      const text = await response.text();
+      if (response.status === 429 && attempt < 2) {
+        const retryAfter = Number(response.headers.get('retry-after'));
+        const backoff = Number.isFinite(retryAfter) && retryAfter > 0
+          ? retryAfter * 1000
+          : 2500 * (attempt + 1);
+        attempt += 1;
+        await wait(Math.min(backoff, 15_000));
+        continue;
+      }
+      if (!response.ok) throw new Error(`Live data request failed (${response.status})`);
+      if (!text) throw new Error('Live data request returned an empty response');
+
+      const value = JSON.parse(text) as T;
+      tzktCache.set(url, { expiresAt: Date.now() + cacheMs, value });
+      return value;
+    }
+    throw new Error('Live data request failed (429) after retries');
+  };
+
+  const request = tzktQueue.then(run, run);
+  tzktQueue = request.then(() => undefined, () => undefined);
+  tzktRequests.set(url, request);
+  try {
+    return await request;
+  } finally {
+    tzktRequests.delete(url);
+  }
+}
+
+async function fetchTzktTransactions(query: string, pageSize = 1000): Promise<any[]> {
   const operations: any[] = [];
   let offset = 0;
 
   while (true) {
     const separator = query.includes('?') ? '&' : '?';
-    const page = await fetchJson<any[]>(`${query}${separator}limit=${pageSize}&offset=${offset}`);
+    const page = await fetchTzktJson<any[]>(`${query}${separator}limit=${pageSize}&offset=${offset}`, 300_000);
     operations.push(...page);
     if (page.length < pageSize) return operations;
     offset += page.length;
   }
 }
 
-async function fetchRecentTzktTransactions(query: string, limit: number): Promise<any[]> {
+async function fetchRecentTzktTransactions(query: string, limit: number, cacheMs = 60_000): Promise<any[]> {
   const separator = query.includes('?') ? '&' : '?';
-  const page = await fetchJson<any[]>(`${query}${separator}limit=${limit}`);
+  const page = await fetchTzktJson<any[]>(`${query}${separator}limit=${Math.min(limit, 1000)}`, cacheMs);
   return Array.isArray(page) ? page : [];
+}
+
+let recentDomainOperationsCache: { loadedAt: number; value: { buys: any[]; renews: any[] } } | null = null;
+let recentDomainOperationsRequest: Promise<{ buys: any[]; renews: any[] }> | null = null;
+
+async function fetchRecentDomainOperations(): Promise<{ buys: any[]; renews: any[] }> {
+  if (recentDomainOperationsCache && Date.now() - recentDomainOperationsCache.loadedAt < 60_000) {
+    return recentDomainOperationsCache.value;
+  }
+  if (recentDomainOperationsRequest) return recentDomainOperationsRequest;
+
+  recentDomainOperationsRequest = (async () => {
+    const since = isoAgo(48);
+    const buys = await fetchRecentTzktTransactions(
+      `${TZKT_API}/operations/transactions?target=${BUY_CONTRACT}&entrypoint=buy&status=applied&timestamp.ge=${since}&sort.desc=id`,
+      1000,
+    );
+    const renews = await fetchRecentTzktTransactions(
+      `${TZKT_API}/operations/transactions?target=${RENEW_CONTRACT}&entrypoint=renew&status=applied&timestamp.ge=${since}&sort.desc=id`,
+      1000,
+    );
+    const value = { buys, renews };
+    recentDomainOperationsCache = { loadedAt: Date.now(), value };
+    return value;
+  })();
+
+  try {
+    return await recentDomainOperationsRequest;
+  } finally {
+    recentDomainOperationsRequest = null;
+  }
 }
 
 let domainSnapshotCache: { loadedAt: number; value: DomainSnapshot } | null = null;
@@ -165,11 +257,11 @@ export const tezosService = {
   async getStats(): Promise<DomainStats> {
     const now24 = isoAgo(24);
     const now48 = isoAgo(48);
-    const [snapshot, buys, renews] = await Promise.all([
+    const [snapshot, recentOperations] = await Promise.all([
       fetchDomainSnapshot(),
-      fetchRecentTzktTransactions(`${TZKT_API}/operations/transactions?target=${BUY_CONTRACT}&entrypoint=buy&status=applied&timestamp.ge=${now48}&sort.desc=id`, 10000),
-      fetchRecentTzktTransactions(`${TZKT_API}/operations/transactions?target=${RENEW_CONTRACT}&entrypoint=renew&status=applied&timestamp.ge=${now48}&sort.desc=id`, 10000),
+      fetchRecentDomainOperations(),
     ]);
+    const { buys, renews } = recentOperations;
 
     const countInWindow = (operations: any[], from: string, to?: string) => operations.filter(op => op.timestamp >= from && (!to || op.timestamp < to)).length;
     const buysLast24h = countInWindow(buys, now24);
@@ -194,10 +286,7 @@ export const tezosService = {
   },
 
   async getRecentActivity(): Promise<ActivityItem[]> {
-    const [buys, renews] = await Promise.all([
-      fetchRecentTzktTransactions(`${TZKT_API}/operations/transactions?target=${BUY_CONTRACT}&entrypoint=buy&status=applied&sort.desc=id`, 15),
-      fetchRecentTzktTransactions(`${TZKT_API}/operations/transactions?target=${RENEW_CONTRACT}&entrypoint=renew&status=applied&sort.desc=id`, 15),
-    ]);
+    const { buys, renews } = await fetchRecentDomainOperations();
     const items: ActivityItem[] = [];
 
     for (const op of buys) {
@@ -295,7 +384,7 @@ export const tezosService = {
    */
   async getAffiliateOnChainData(): Promise<AffiliatePartner[]> {
     try {
-      const ops = await fetchTzktTransactions(`${TZKT_API}/operations/transactions?target=${AFFILIATE_CONTRACT}&status=applied&sort.desc=id`);
+      const ops = await fetchTzktTransactions(`${TZKT_API}/operations/transactions?target=${AFFILIATE_CONTRACT}&status=applied&sort.desc=id`, 1000);
 
       if (ops.length === 0) return [];
 
@@ -341,7 +430,7 @@ export const tezosService = {
 
   async getAffiliateRecentOps(): Promise<AffiliateOp[]> {
     try {
-      const ops = await fetchRecentTzktTransactions(`${TZKT_API}/operations/transactions?target=${AFFILIATE_CONTRACT}&status=applied&sort.desc=id`, 25);
+      const ops = await fetchRecentTzktTransactions(`${TZKT_API}/operations/transactions?target=${AFFILIATE_CONTRACT}&status=applied&sort.desc=id`, 25, 60_000);
 
       if (ops.length === 0) return [];
 
