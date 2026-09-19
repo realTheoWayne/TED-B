@@ -1,8 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { motion } from 'framer-motion';
 import {
   Users2,
-  TrendingUp,
   RefreshCw,
   Search,
   ExternalLink,
@@ -30,7 +28,6 @@ import {
   TableHeader,
   TableRow,
 } from './ui/table';
-import { Badge } from './ui/badge';
 import {
   BarChart,
   Bar,
@@ -39,7 +36,6 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  Cell,
 } from 'recharts';
 import { tezosService, AffiliatePartner, AffiliateOp } from '../lib/tezos';
 import { Skeleton } from './ui/skeleton';
@@ -93,7 +89,8 @@ const AffiliatesDashboard = () => {
   }, []);
 
   useEffect(() => {
-    fetchData();
+    const timer = window.setTimeout(() => fetchData(), 0);
+    return () => window.clearTimeout(timer);
   }, [fetchData]);
 
   const filtered = partners.filter(

@@ -49,6 +49,7 @@ export function TezosDashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [lastUpdatedText, setLastUpdatedText] = useState('');
+  const [dataError, setDataError] = useState<string | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('Dashboard');
   const [ready, setReady] = useState(false);
@@ -72,7 +73,10 @@ export function TezosDashboard() {
       setTopHolders(h);
       setExtensions(e);
       setLastUpdated(new Date());
+      setDataError(null);
     } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to load live blockchain data';
+      setDataError(message);
       console.error('Failed to load data:', err);
     } finally {
       if (isInitial) setLoading(false);
@@ -87,10 +91,12 @@ export function TezosDashboard() {
 
   // Initial load
   useEffect(() => {
-    loadData(true).then(() => {
-      // Small delay to let React commit the DOM before revealing
-      requestAnimationFrame(() => setReady(true));
-    });
+    const timer = window.setTimeout(() => {
+      loadData(true).then(() => {
+        requestAnimationFrame(() => setReady(true));
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [loadData]);
 
   // Auto-refresh polling every 30s
@@ -123,10 +129,10 @@ export function TezosDashboard() {
   }, []);
 
   const statCards = [
-    { label: 'Total Registered', value: stats?.totalDomains?.toLocaleString() || '0', ...formatChange(stats?.totalDomainsChange), icon: Globe },
-    { label: 'New (24h)', value: stats?.new24h?.toLocaleString() || '0', ...formatChange(stats?.new24hChange), icon: TrendingUp },
-    { label: 'Renewals (24h)', value: stats?.renewals24h?.toLocaleString() || '0', ...formatChange(stats?.renewalsChange), icon: Clock },
-    { label: 'Active Domains', value: stats?.activeUsers?.toLocaleString() || '0', ...formatChange(stats?.activeUsersChange), icon: Users },
+    { label: 'Total Registered', value: stats?.totalDomains?.toLocaleString() || '—', ...formatChange(stats?.totalDomainsChange), icon: Globe },
+    { label: 'New (24h)', value: stats?.new24h?.toLocaleString() || '—', ...formatChange(stats?.new24hChange), icon: TrendingUp },
+    { label: 'Renewals (24h)', value: stats?.renewals24h?.toLocaleString() || '—', ...formatChange(stats?.renewalsChange), icon: Clock },
+    { label: 'Unique Owners', value: stats?.uniqueOwners?.toLocaleString() || '—', ...formatChange(stats?.uniqueOwnersChange), icon: Users },
   ];
 
   return (
@@ -153,7 +159,8 @@ export function TezosDashboard() {
             <div>
               <h1 className="text-3xl font-bold tracking-tight">{activeTab}</h1>
               <p className="text-muted-foreground">
-                {activeTab === 'Dashboard' && 'Live data from the Tezos blockchain'}
+                {dataError ? `Live data unavailable: ${dataError}` : null}
+                {!dataError && activeTab === 'Dashboard' && 'Live data from the Tezos blockchain'}
                 {activeTab === 'Marketplace' && 'Explore recent sales and pricing trends'}
                 {activeTab === 'Distribution' && 'Domain extension and ownership breakdown'}
                 {activeTab === 'Leaderboards' && 'Top collectors in the Tezos community'}
@@ -314,8 +321,8 @@ export function TezosDashboard() {
               <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.7 }}>
                 <Card>
                   <CardHeader>
-                    <CardTitle>Top Holders</CardTitle>
-                    <CardDescription>Addresses with the most domain registrations</CardDescription>
+                    <CardTitle>Latest Owners</CardTitle>
+                    <CardDescription>Owners in the latest live domain sample</CardDescription>
                   </CardHeader>
                   <CardContent>
                     {topHolders.length === 0 ? (

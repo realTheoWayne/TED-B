@@ -11,7 +11,7 @@ import {
   History,
   TrendingUp,
   FileCode,
-  Users
+  Database
 } from 'lucide-react';
 import { 
   Card, 
@@ -45,8 +45,9 @@ import { Skeleton } from './ui/skeleton';
 
 const TezPageDashboard = () => {
   const [sites, setSites] = useState<TezPageSite[]>([]);
-  const [stats, setStats] = useState({ totalSites: 0, newSites24h: 0 });
+  const [stats, setStats] = useState<{ totalSites: number; newSites24h: number | null }>({ totalSites: 0, newSites24h: null });
   const [loading, setLoading] = useState(true);
+  const [dataError, setDataError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
@@ -62,7 +63,10 @@ const TezPageDashboard = () => {
       ]);
       setSites(s);
       setStats(st);
+      setDataError(null);
     } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to load live domain records';
+      setDataError(message);
       console.error('Failed to load decentralized web data:', err);
     } finally {
       setLoading(false);
@@ -71,7 +75,8 @@ const TezPageDashboard = () => {
   }, []);
 
   useEffect(() => {
-    fetchData();
+    const timer = window.setTimeout(() => fetchData(), 0);
+    return () => window.clearTimeout(timer);
   }, [fetchData]);
 
   const filteredSites = sites.filter(s => 
@@ -79,17 +84,9 @@ const TezPageDashboard = () => {
     s.owner.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  // Mock growth data for the chart
-  const growthData = [
-    { date: 'Jan 24', count: 380 },
-    { date: 'Feb 24', count: 395 },
-    { date: 'Mar 24', count: 410 },
-    { date: 'Apr 24', count: 425 },
-    { date: 'May 24', count: 438 },
-    { date: 'Jun 24', count: 452 },
-    { date: 'Jul 24', count: 468 },
-    { date: 'Aug 24', count: stats.totalSites || 480 },
-  ];
+  const growthData = stats.totalSites > 0
+    ? [{ date: 'Live snapshot', count: stats.totalSites }]
+    : [];
 
   if (loading) {
     return (
@@ -114,8 +111,9 @@ const TezPageDashboard = () => {
             .Page Analytics
           </h1>
           <p className="text-muted-foreground">
-            Tracking the decentralized web and Tezos Domains integrations.
+            Live domain records from the Tezos Domains API.
           </p>
+          {dataError && <p className="mt-2 text-sm text-destructive">Live data unavailable: {dataError}</p>}
         </div>
         <div className="flex items-center gap-2">
           <Button 
@@ -168,33 +166,33 @@ const TezPageDashboard = () => {
             <TrendingUp className="h-4 w-4 text-accent" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">+{stats.newSites24h}</div>
+            <div className="text-2xl font-bold">{stats.newSites24h === null ? '—' : `+${stats.newSites24h}`}</div>
             <p className="text-xs text-muted-foreground">
-              Daily deployment average
+              Not provided by the current domain API
             </p>
           </CardContent>
         </Card>
         <Card className="bg-background/50 backdrop-blur-sm border-primary/20">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Verified Hosting</CardTitle>
+            <CardTitle className="text-sm font-medium">Domains with Records</CardTitle>
             <ShieldCheck className="h-4 w-4 text-primary" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">84%</div>
+            <div className="text-2xl font-bold">{stats.totalSites.toLocaleString()}</div>
             <p className="text-xs text-muted-foreground">
-              Sites using IPFS/IPNS
+              Live records returned by the API
             </p>
           </CardContent>
         </Card>
         <Card className="bg-background/50 backdrop-blur-sm border-accent/20">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Active Users</CardTitle>
-            <Users className="h-4 w-4 text-accent" />
+            <CardTitle className="text-sm font-medium">Data source</CardTitle>
+            <Database className="h-4 w-4 text-accent" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">12.4k</div>
+            <div className="text-2xl font-bold">On-chain</div>
             <p className="text-xs text-muted-foreground">
-              Estimated monthly visits
+              Tezos Domains GraphQL records
             </p>
           </CardContent>
         </Card>

@@ -2,12 +2,11 @@ export interface DomainStats {
   totalDomains: number;
   new24h: number;
   renewals24h: number;
-  activeUsers: number;
-  // Deltas computed from real data
+  uniqueOwners: number | null;
   totalDomainsChange: number | null;
   new24hChange: number | null;
   renewalsChange: number | null;
-  activeUsersChange: number | null;
+  uniqueOwnersChange: number | null;
 }
 
 export interface ActivityItem {
@@ -59,11 +58,22 @@ export interface AffiliateOp {
   timestamp: string;
 }
 
+interface DomainRecord {
+  name: string;
+  owner: string;
+  data: Array<{ key: string; value: unknown; rawValue: string }>;
+}
+
+interface DomainSnapshot {
+  totalCount: number;
+  domains: DomainRecord[];
+  owners: Record<string, number>;
+}
+
 const TZKT_API = 'https://api.tzkt.io/v1';
 const TEZOS_DOMAINS_API = 'https://api.tezos.domains/graphql';
 const BUY_CONTRACT = 'KT191reDVKrLxU9rjTSxg53wRqj6zh8pnHgr';
 const RENEW_CONTRACT = 'KT1EVYBj3f1rZHNeUtq4ZvVxPTs77wuHwARU';
-const NAME_REGISTRY = 'KT1GBZm7uJvYvHvKZGJ61eA8XF6pAByN8Mv8';
 const AFFILIATE_CONTRACT = 'KT1Hg3ymQBL5nfAbb1JZ8G8AGPZ4cpcko2H2';
 
 function hexToUtf8(hex: string): string {
@@ -75,26 +85,74 @@ function hexToUtf8(hex: string): string {
   }
 }
 
-async function fetchJson<T>(url: string): Promise<T | null> {
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const text = await res.text();
-    if (!text) return null;
-    return JSON.parse(text) as T;
-  } catch {
-    return null;
+async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init);
+  const text = await res.text();
+  if (!res.ok) throw new Error(`Live data request failed (${res.status})`);
+  if (!text) throw new Error('Live data request returned an empty response');
+  return JSON.parse(text) as T;
+}
+
+async function fetchTzktTransactions(query: string, pageSize = 10000): Promise<any[]> {
+  const operations: any[] = [];
+  let offset = 0;
+
+  while (true) {
+    const separator = query.includes('?') ? '&' : '?';
+    const page = await fetchJson<any[]>(`${query}${separator}limit=${pageSize}&offset=${offset}`);
+    operations.push(...page);
+    if (page.length < pageSize) return operations;
+    offset += page.length;
   }
 }
 
-async function fetchCount(url: string): Promise<number> {
+async function fetchRecentTzktTransactions(query: string, limit: number): Promise<any[]> {
+  const separator = query.includes('?') ? '&' : '?';
+  const page = await fetchJson<any[]>(`${query}${separator}limit=${limit}`);
+  return Array.isArray(page) ? page : [];
+}
+
+let domainSnapshotCache: { loadedAt: number; value: DomainSnapshot } | null = null;
+let domainSnapshotRequest: Promise<DomainSnapshot> | null = null;
+
+async function fetchDomainSnapshot(): Promise<DomainSnapshot> {
+  if (domainSnapshotCache && Date.now() - domainSnapshotCache.loadedAt < 300_000) {
+    return domainSnapshotCache.value;
+  }
+  if (domainSnapshotRequest) return domainSnapshotRequest;
+
+  domainSnapshotRequest = (async () => {
+    const query = `query {
+      domains(first: 50, order: { field: LEVEL, direction: DESC }) {
+        totalCount
+        items { name owner data { key value rawValue } }
+        pageInfo { hasNextPage endCursor }
+      }
+    }`;
+    const response = await fetchJson<{ data?: { domains?: { totalCount: number; items: DomainRecord[] } }; errors?: Array<{ message?: string }> }>(TEZOS_DOMAINS_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+    });
+    if (response.errors?.length || !response.data?.domains) {
+      throw new Error(response.errors?.[0]?.message || 'Tezos Domains returned no domain data');
+    }
+
+    const domains = response.data.domains.items;
+    const owners: Record<string, number> = {};
+    for (const domain of domains) {
+      if (domain.owner) owners[domain.owner] = (owners[domain.owner] || 0) + 1;
+    }
+
+    const value = { totalCount: response.data.domains.totalCount, domains, owners };
+    domainSnapshotCache = { loadedAt: Date.now(), value };
+    return value;
+  })();
+
   try {
-    const res = await fetch(url);
-    if (!res.ok) return 0;
-    const text = await res.text();
-    return text ? parseInt(text, 10) || 0 : 0;
-  } catch {
-    return 0;
+    return await domainSnapshotRequest;
+  } finally {
+    domainSnapshotRequest = null;
   }
 }
 
@@ -107,244 +165,125 @@ export const tezosService = {
   async getStats(): Promise<DomainStats> {
     const now24 = isoAgo(24);
     const now48 = isoAgo(48);
-
-    // All counts fetched in parallel
-    const [
-      totalBuys,
-      buysLast24h,
-      buysPrev24h,
-      renewsLast24h,
-      renewsPrev24h,
-      uniqueSenders,
-    ] = await Promise.all([
-      // Total domain registrations (all time)
-      fetchCount(
-        `${TZKT_API}/operations/transactions/count?target=${BUY_CONTRACT}&entrypoint=buy&status=applied`
-      ),
-      // New registrations last 24h
-      fetchCount(
-        `${TZKT_API}/operations/transactions/count?target=${BUY_CONTRACT}&entrypoint=buy&status=applied&timestamp.ge=${now24}`
-      ),
-      // Registrations 24-48h ago (for delta)
-      fetchCount(
-        `${TZKT_API}/operations/transactions/count?target=${BUY_CONTRACT}&entrypoint=buy&status=applied&timestamp.ge=${now48}&timestamp.lt=${now24}`
-      ),
-      // Renewals last 24h
-      fetchCount(
-        `${TZKT_API}/operations/transactions/count?target=${RENEW_CONTRACT}&entrypoint=renew&status=applied&timestamp.ge=${now24}`
-      ),
-      // Renewals 24-48h ago
-      fetchCount(
-        `${TZKT_API}/operations/transactions/count?target=${RENEW_CONTRACT}&entrypoint=renew&status=applied&timestamp.ge=${now48}&timestamp.lt=${now24}`
-      ),
-      // Unique domain holders from name registry bigmap keys count
-      fetchCount(
-        `${TZKT_API}/bigmaps/4626/keys/count?active=true`
-      ),
+    const [snapshot, buys, renews] = await Promise.all([
+      fetchDomainSnapshot(),
+      fetchRecentTzktTransactions(`${TZKT_API}/operations/transactions?target=${BUY_CONTRACT}&entrypoint=buy&status=applied&timestamp.ge=${now48}&sort.desc=id`, 10000),
+      fetchRecentTzktTransactions(`${TZKT_API}/operations/transactions?target=${RENEW_CONTRACT}&entrypoint=renew&status=applied&timestamp.ge=${now48}&sort.desc=id`, 10000),
     ]);
 
-    // Compute percentage changes
+    const countInWindow = (operations: any[], from: string, to?: string) => operations.filter(op => op.timestamp >= from && (!to || op.timestamp < to)).length;
+    const buysLast24h = countInWindow(buys, now24);
+    const buysPrev24h = countInWindow(buys, now48, now24);
+    const renewsLast24h = countInWindow(renews, now24);
+    const renewsPrev24h = countInWindow(renews, now48, now24);
     const pct = (curr: number, prev: number): number | null => {
       if (prev === 0) return curr > 0 ? 100 : null;
       return Math.round(((curr - prev) / prev) * 1000) / 10;
     };
 
     return {
-      totalDomains: totalBuys,
+      totalDomains: snapshot.totalCount,
       new24h: buysLast24h,
       renewals24h: renewsLast24h,
-      activeUsers: uniqueSenders || 0,
-      totalDomainsChange: null, // all-time stat; no delta
+      uniqueOwners: null,
+      totalDomainsChange: null,
       new24hChange: pct(buysLast24h, buysPrev24h),
       renewalsChange: pct(renewsLast24h, renewsPrev24h),
-      activeUsersChange: null,
+      uniqueOwnersChange: null,
     };
   },
 
   async getRecentActivity(): Promise<ActivityItem[]> {
-    // Fetch recent buys and renewals in parallel
     const [buys, renews] = await Promise.all([
-      fetchJson<any[]>(
-        `${TZKT_API}/operations/transactions?target=${BUY_CONTRACT}&entrypoint=buy&status=applied&limit=15&sort.desc=id`
-      ),
-      fetchJson<any[]>(
-        `${TZKT_API}/operations/transactions?target=${RENEW_CONTRACT}&entrypoint=renew&status=applied&limit=10&sort.desc=id`
-      ),
+      fetchRecentTzktTransactions(`${TZKT_API}/operations/transactions?target=${BUY_CONTRACT}&entrypoint=buy&status=applied&sort.desc=id`, 15),
+      fetchRecentTzktTransactions(`${TZKT_API}/operations/transactions?target=${RENEW_CONTRACT}&entrypoint=renew&status=applied&sort.desc=id`, 15),
     ]);
-
     const items: ActivityItem[] = [];
 
-    if (Array.isArray(buys)) {
-      for (const op of buys) {
-        const label = op.parameter?.value?.label;
-        items.push({
-          id: `buy-${op.id}`,
-          type: 'buy',
-          domain: label ? `${hexToUtf8(label)}.tez` : 'unknown.tez',
-          address: op.sender?.address || 'unknown',
-          timestamp: op.timestamp,
-          amount: (op.amount || 0) / 1_000_000,
-        });
-      }
+    for (const op of buys) {
+      const label = op.parameter?.value?.label;
+      items.push({
+        id: `buy-${op.id}`,
+        type: 'buy',
+        domain: label ? `${hexToUtf8(label)}.tez` : 'unknown.tez',
+        address: op.parameter?.value?.owner || op.sender?.address || 'unknown',
+        timestamp: op.timestamp,
+        amount: (op.amount || 0) / 1_000_000,
+      });
     }
-
-    if (Array.isArray(renews)) {
-      for (const op of renews) {
-        const label = op.parameter?.value?.label ?? op.parameter?.value;
-        const name = typeof label === 'string' && /^[0-9a-f]+$/i.test(label)
-          ? hexToUtf8(label)
-          : (label || 'unknown');
-        items.push({
-          id: `renew-${op.id}`,
-          type: 'renew',
-          domain: `${name}.tez`,
-          address: op.sender?.address || 'unknown',
-          timestamp: op.timestamp,
-          amount: (op.amount || 0) / 1_000_000,
-        });
-      }
+    for (const op of renews) {
+      const label = op.parameter?.value?.label;
+      const name = typeof label === 'string' && /^[0-9a-f]+$/i.test(label) ? hexToUtf8(label) : (label || 'unknown');
+      items.push({
+        id: `renew-${op.id}`,
+        type: 'renew',
+        domain: `${name}.tez`,
+        address: op.sender?.address || 'unknown',
+        timestamp: op.timestamp,
+        amount: (op.amount || 0) / 1_000_000,
+      });
     }
-
-    // Sort by timestamp descending, take latest 15
-    items.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-    return items.slice(0, 15);
+    return items.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).slice(0, 15);
   },
 
   async getGrowthData(): Promise<ChartData[]> {
-    // Fetch daily registration counts for the last 30 days using TzKT timestamp grouping
     const thirtyDaysAgo = isoAgo(30 * 24);
-
-    const ops = await fetchJson<any[]>(
-      `${TZKT_API}/operations/transactions?target=${BUY_CONTRACT}&entrypoint=buy&status=applied&timestamp.ge=${thirtyDaysAgo}&limit=10000&select=timestamp,amount`
-    );
-
-    if (!Array.isArray(ops) || ops.length === 0) return [];
-
-    // Bucket by date
+    const ops = await fetchTzktTransactions(`${TZKT_API}/operations/transactions?target=${BUY_CONTRACT}&entrypoint=buy&status=applied&timestamp.ge=${thirtyDaysAgo}&select=timestamp,amount`, 1000);
     const buckets: Record<string, { count: number; volume: number }> = {};
     const now = new Date();
-    // Pre-fill all 30 days so there are no gaps
     for (let i = 30; i >= 0; i--) {
       const d = new Date(now);
       d.setDate(d.getDate() - i);
-      const key = d.toISOString().slice(0, 10);
-      buckets[key] = { count: 0, volume: 0 };
+      buckets[d.toISOString().slice(0, 10)] = { count: 0, volume: 0 };
     }
-
     for (const op of ops) {
       const day = op.timestamp?.slice(0, 10);
-      if (day && buckets[day] !== undefined) {
+      if (day && buckets[day]) {
         buckets[day].count += 1;
         buckets[day].volume += (op.amount || 0) / 1_000_000;
       }
     }
-
-    return Object.entries(buckets)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([date, data]) => ({
-        date: new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        count: data.count,
-        volume: Math.round(data.volume * 100) / 100,
-      }));
+    return Object.entries(buckets).sort(([a], [b]) => a.localeCompare(b)).map(([date, data]) => ({
+      date: new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      count: data.count,
+      volume: Math.round(data.volume * 100) / 100,
+    }));
   },
 
   async getTopHolders(): Promise<{ address: string; count: number }[]> {
-    // Fetch top senders of buy operations with the most distinct transactions
-    const ops = await fetchJson<any[]>(
-      `${TZKT_API}/operations/transactions?target=${BUY_CONTRACT}&entrypoint=buy&status=applied&limit=10000&select=sender&sort.desc=id`
-    );
-
-    if (!Array.isArray(ops) || ops.length === 0) return [];
-
-    const counts: Record<string, number> = {};
-    for (const op of ops) {
-      const addr = op.sender?.address || op.sender;
-      if (addr && typeof addr === 'string') {
-        counts[addr] = (counts[addr] || 0) + 1;
-      }
-    }
-
-    return Object.entries(counts)
+    const snapshot = await fetchDomainSnapshot();
+    return Object.entries(snapshot.owners)
       .sort(([, a], [, b]) => b - a)
       .slice(0, 10)
       .map(([address, count]) => ({ address, count }));
   },
 
   async getExtensionDistribution(): Promise<ExtensionData[]> {
-    // Tezos Domains currently only supports .tez; future extensions are not yet live
-    // We show the real single-extension scenario
-    return [
-      { name: '.tez', value: 100, color: 'hsl(var(--primary))' },
-    ];
+    return [{ name: '.tez', value: 100, color: 'hsl(var(--primary))' }];
   },
 
   async getTezPageSites(): Promise<TezPageSite[]> {
-    const query = `
-      query {
-        domains(where: { content: { _is_null: false } }, order_by: { level: desc }, limit: 50) {
-          name
-          content
-          owner {
-            address
-          }
-        }
-      }
-    `;
-
-    try {
-      const res = await fetch(TEZOS_DOMAINS_API, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query }),
+    const snapshot = await fetchDomainSnapshot();
+    return snapshot.domains
+      .filter(domain => domain.data.some(item => /content|site|page|ipfs|ipns/i.test(item.key)))
+      .slice(0, 50)
+      .map(domain => {
+        const content = domain.data.find(item => /content|site|page|ipfs|ipns/i.test(item.key));
+        return {
+          name: domain.name,
+          content: typeof content?.value === 'string' ? content.value : content?.rawValue || 'On-chain content record',
+          owner: domain.owner,
+          link: `https://${domain.name}.page`,
+        };
       });
-
-      const json = await res.json();
-      const domains = json?.data?.domains || [];
-
-      // Seed with some known ones if needed, or just map API results
-      const sites = domains.map((d: any) => ({
-        name: d.name,
-        content: d.content,
-        owner: d.owner?.address || 'Unknown',
-        link: `https://${d.name}.page`,
-      }));
-
-      // Add notable ones if not present (manual curation as requested for "direct hits")
-      const notable = [
-        { name: 'gogos.tez', content: 'ipfs://Qm...', owner: 'tz1...', link: 'https://gogos.tez.page' },
-        { name: 'awesome-tezos.tez', content: 'ipfs://Qm...', owner: 'tz1...', link: 'https://awesome-tezos.tez.page' },
-        { name: 'tezid.tez', content: '...', owner: 'tz1...', link: 'https://tezid.tez.page' },
-        { name: 'dns.tez', content: '...', owner: 'tz1...', link: 'https://dns.tez.page' },
-        { name: 'madfish.tez', content: '...', owner: 'tz1...', link: 'https://madfish.tez.page' },
-        { name: 'crunchy.tez', content: '...', owner: 'tz1...', link: 'https://crunchy.tez.page' },
-      ];
-
-      // Merge and unique by name
-      const all = [...sites];
-      for (const n of notable) {
-        if (!all.find(s => s.name === n.name)) {
-          all.push(n);
-        }
-      }
-
-      return all;
-    } catch (err) {
-      console.error('Failed to fetch .tez.page sites:', err);
-      return [
-        { name: 'gogos.tez', content: 'ipfs://...', owner: '...', link: 'https://gogos.tez.page' },
-        { name: 'awesome-tezos.tez', content: 'ipfs://...', owner: '...', link: 'https://awesome-tezos.tez.page' },
-      ];
-    }
   },
 
-  async getDecentralizedWebStats(): Promise<{ totalSites: number; newSites24h: number }> {
-    // Simplified count from the same GraphQL logic or TzKT bigmap
-    // Bigmap 4626 stores the records. We can count keys with "content" record.
-    // For now, using a fixed realistic count + API result length
-    const sites = await this.getTezPageSites();
+  async getDecentralizedWebStats(): Promise<{ totalSites: number; newSites24h: number | null }> {
+    const snapshot = await fetchDomainSnapshot();
+    const domainsWithRecords = snapshot.domains.filter(domain => domain.data.length > 0);
     return {
-      totalSites: 450 + sites.length, // Estimated total based on ecosystem growth
-      newSites24h: Math.floor(Math.random() * 5) + 1, // Mock dynamic data for now
+      totalSites: domainsWithRecords.length,
+      newSites24h: null,
     };
   },
 
@@ -356,11 +295,9 @@ export const tezosService = {
    */
   async getAffiliateOnChainData(): Promise<AffiliatePartner[]> {
     try {
-      const ops = await fetchJson<any[]>(
-        `${TZKT_API}/operations/transactions?target=${AFFILIATE_CONTRACT}&status=applied&limit=10000&select=sender,parameter,amount,timestamp&sort.desc=id`
-      );
+      const ops = await fetchTzktTransactions(`${TZKT_API}/operations/transactions?target=${AFFILIATE_CONTRACT}&status=applied&sort.desc=id`);
 
-      if (!Array.isArray(ops) || ops.length === 0) return [];
+      if (ops.length === 0) return [];
 
       const affiliates: Record<string, { buys: number; renewals: number; volumeMutez: number; domains: Set<string>; lastActive: string }> = {};
 
@@ -398,19 +335,18 @@ export const tezosService = {
         .sort((a, b) => b.totalOps - a.totalOps);
     } catch (err) {
       console.error('Failed to fetch on-chain affiliate data:', err);
-      return [];
+      throw err;
     }
   },
 
   async getAffiliateRecentOps(): Promise<AffiliateOp[]> {
     try {
-      const ops = await fetchJson<any[]>(
-        `${TZKT_API}/operations/transactions?target=${AFFILIATE_CONTRACT}&status=applied&limit=25&sort.desc=id`
-      );
+      const ops = await fetchRecentTzktTransactions(`${TZKT_API}/operations/transactions?target=${AFFILIATE_CONTRACT}&status=applied&sort.desc=id`, 25);
 
-      if (!Array.isArray(ops) || ops.length === 0) return [];
+      if (ops.length === 0) return [];
 
       return ops
+
         .filter((op: any) => op.parameter?.value?.affiliate)
         .map((op: any) => {
           const label = op.parameter?.value?.label;
@@ -426,7 +362,7 @@ export const tezosService = {
         });
     } catch (err) {
       console.error('Failed to fetch recent affiliate ops:', err);
-      return [];
+      throw err;
     }
   },
 };
