@@ -150,13 +150,13 @@ const TezPageDashboard = () => {
       <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card className="bg-background/50 backdrop-blur-sm border-primary/20">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Total .Page Sites</CardTitle>
+            <CardTitle className="text-sm font-medium">Domains with Records</CardTitle>
             <Globe className="h-4 w-4 text-primary" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{stats.totalSites}</div>
             <p className="text-xs text-muted-foreground">
-              Across all .tez domains
+              Found in the latest live API page
             </p>
           </CardContent>
         </Card>
@@ -202,7 +202,7 @@ const TezPageDashboard = () => {
         <Card className="lg:col-span-2 bg-background/50 backdrop-blur-sm overflow-hidden">
           <CardHeader>
             <CardTitle>Growth Trend</CardTitle>
-            <CardDescription>Adoption of .tez.page decentralized websites.</CardDescription>
+            <CardDescription>Domains with records in the latest live API page.</CardDescription>
           </CardHeader>
           <CardContent className="h-[300px] p-0 pr-4">
             <ResponsiveContainer width="100%" height="100%">
@@ -261,7 +261,7 @@ const TezPageDashboard = () => {
                   </div>
                   <div>
                     <p className="font-medium group-hover:text-primary transition-colors">{site.name}</p>
-                    <p className="text-xs text-muted-foreground">Active .page redirect</p>
+                    <p className="text-xs text-muted-foreground">{site.isWebsiteRecord ? 'Website record' : 'On-chain record'}</p>
                   </div>
                 </div>
                 <Button variant="ghost" size="icon" asChild className="opacity-0 group-hover:opacity-100 transition-opacity">
@@ -279,7 +279,7 @@ const TezPageDashboard = () => {
         <CardHeader className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <CardTitle>Directory</CardTitle>
-            <CardDescription>Explore all domains with decentralized content.</CardDescription>
+            <CardDescription>Explore every domain record returned by the live API page.</CardDescription>
           </div>
           <div className="relative w-full md:w-72">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -298,7 +298,7 @@ const TezPageDashboard = () => {
                 <TableRow>
                   <TableHead>Domain</TableHead>
                   <TableHead>Owner</TableHead>
-                  <TableHead>Content Hash / Record</TableHead>
+                  <TableHead>Record</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -314,13 +314,13 @@ const TezPageDashboard = () => {
                     <TableCell className="font-mono text-xs">
                       {site.owner.slice(0, 6)}...{site.owner.slice(-4)}
                     </TableCell>
-                    <TableCell className="max-w-[200px] truncate font-mono text-xs text-muted-foreground">
-                      {site.content}
+                    <TableCell className="max-w-[260px] truncate text-xs text-muted-foreground">
+                      <span className="font-mono text-primary">{site.recordKey}</span>{' '}{site.content}
                     </TableCell>
                     <TableCell className="text-right">
                       <Button variant="ghost" size="sm" asChild>
                         <a href={site.link} target="_blank" rel="noopener noreferrer" className="flex items-center">
-                          Visit Site <ExternalLink className="ml-2 h-3 w-3" />
+                          Open .tez.page <ExternalLink className="ml-2 h-3 w-3" />
                         </a>
                       </Button>
                     </TableCell>
@@ -343,16 +343,17 @@ const TezPageDashboard = () => {
                         <div className="h-12 w-12 rounded-xl bg-primary/5 flex items-center justify-center text-primary group-hover:bg-primary group-hover:text-white transition-all duration-300">
                           <Globe className="h-6 w-6" />
                         </div>
-                        <Badge variant="secondary" className="bg-primary/10 text-primary">Live</Badge>
+                        <Badge variant="secondary" className="bg-primary/10 text-primary">On-chain</Badge>
                       </div>
                       <div>
                         <h3 className="text-lg font-bold group-hover:text-primary transition-colors">{site.name}</h3>
-                        <p className="text-sm text-muted-foreground line-clamp-1 mb-1">{site.content}</p>
+                        <p className="text-xs font-mono text-primary mb-1">{site.recordKey}</p>
+                        <p className="text-sm text-muted-foreground line-clamp-1">{site.content}</p>
                         <p className="text-xs text-muted-foreground/60">Owner: {site.owner.slice(0, 8)}...</p>
                       </div>
                       <Button className="w-full mt-2 bg-primary/10 text-primary hover:bg-primary hover:text-white border-none" asChild>
                         <a href={site.link} target="_blank" rel="noopener noreferrer">
-                          Go to Site <ExternalLink className="ml-2 h-4 w-4" />
+                          Open .tez.page <ExternalLink className="ml-2 h-4 w-4" />
                         </a>
                       </Button>
                     </CardContent>

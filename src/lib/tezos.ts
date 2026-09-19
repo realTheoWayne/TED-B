@@ -33,8 +33,10 @@ export interface ExtensionData {
 export interface TezPageSite {
   name: string;
   content: string;
+  recordKey: string;
   owner: string;
   link: string;
+  isWebsiteRecord: boolean;
   timestamp?: string;
 }
 
@@ -366,15 +368,21 @@ export const tezosService = {
   async getTezPageSites(): Promise<TezPageSite[]> {
     const snapshot = await fetchDomainSnapshot();
     return snapshot.domains
-      .filter(domain => domain.data.some(item => /content|site|page|ipfs|ipns/i.test(item.key)))
+      // The API returns arbitrary domain data (openid, social, web, etc.).
+      // The previous filter only accepted a few guessed key names, so the
+      // three live records counted by the KPI were hidden from the directory.
+      .filter(domain => domain.data.length > 0)
       .slice(0, 50)
       .map(domain => {
-        const content = domain.data.find(item => /content|site|page|ipfs|ipns/i.test(item.key));
+        const content = domain.data.find(item => item.key.toLowerCase().startsWith('web:')) || domain.data[0];
+        const value = typeof content.value === 'string' ? content.value : content.rawValue || 'On-chain domain record';
         return {
           name: domain.name,
-          content: typeof content?.value === 'string' ? content.value : content?.rawValue || 'On-chain content record',
+          content: value,
+          recordKey: content.key,
           owner: domain.owner,
           link: `https://${domain.name}.page`,
+          isWebsiteRecord: content.key.toLowerCase().startsWith('web:'),
         };
       });
   },
