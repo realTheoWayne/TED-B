@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { 
   Globe, 
@@ -14,8 +14,7 @@ import {
   Database,
   ChevronLeft,
   ChevronRight,
-  Camera,
-  CheckCircle2
+  Camera
 } from 'lucide-react';
 import { 
   Card, 
@@ -71,6 +70,7 @@ const TezPageDashboard = () => {
   const [snapshotMessage, setSnapshotMessage] = useState<string | null>(null);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
   const [failedPreviewIds, setFailedPreviewIds] = useState<Set<string>>(() => new Set());
+  const captureRunsRef = useRef(new Set<string>());
 
   const fetchData = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
@@ -125,26 +125,29 @@ const TezPageDashboard = () => {
     };
   }, []);
 
-  const filteredSites = sites.filter(s => 
+  const filteredSites = useMemo(() => sites.filter(s =>
     s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
     s.owner.toLowerCase().includes(searchQuery.toLowerCase()) ||
     s.content.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  ), [sites, searchQuery]);
   const pageCount = Math.max(1, Math.ceil(filteredSites.length / PAGE_SIZE));
-  const visibleSites = filteredSites.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-  const uncapturedVisibleSites = visibleSites.filter(site => !snapshots[site.name]);
+  const visibleSites = useMemo(
+    () => filteredSites.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+    [filteredSites, page],
+  );
+  const uncapturedVisibleSites = useMemo(
+    () => visibleSites.filter(site => !snapshots[site.name]),
+    [visibleSites, snapshots],
+  );
 
-  const captureVisibleSnapshots = async () => {
-    if (!currentUserId) {
-      blink.auth.login(window.location.href);
-      return;
-    }
-    const targets = visibleSites.filter(site => !snapshots[site.name]);
+  const captureVisibleSnapshots = useCallback(async (batchKey: string) => {
+    if (!currentUserId || loading || snapshotsLoading || capturing || captureRunsRef.current.has(batchKey)) return;
+    const targets = uncapturedVisibleSites.slice(0, PAGE_SIZE);
     if (targets.length === 0) {
-      setSnapshotMessage('Every site on this page already has a saved snapshot.');
       return;
     }
 
+    captureRunsRef.current.add(batchKey);
     setCapturing(true);
     setSnapshotMessage(null);
     setSnapshotError(null);
@@ -195,11 +198,29 @@ const TezPageDashboard = () => {
       setSnapshotError(`${failures.length} snapshot${failures.length === 1 ? '' : 's'} could not be captured. ${failures.slice(0, 2).join(' · ')}`);
     }
     setSnapshotMessage(`${targets.length - failures.length} of ${targets.length} site snapshots saved. Previews are shared with directory visitors.`);
-  };
+  }, [capturing, currentUserId, loading, snapshotsLoading, uncapturedVisibleSites]);
+
+  useEffect(() => {
+    if (!currentUserId || loading || snapshotsLoading || visibleSites.length === 0) return;
+    const batchKey = `${currentUserId}:${page}:${searchQuery.trim().toLowerCase()}`;
+    const timer = window.setTimeout(() => {
+      void captureVisibleSnapshots(batchKey);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [captureVisibleSnapshots, currentUserId, loading, page, searchQuery, snapshotsLoading, visibleSites.length]);
 
   const growthData = stats.totalSites > 0
     ? [{ date: 'Live snapshot', count: stats.totalSites }]
     : [];
+  const snapshotStatus = capturing
+    ? `Saving previews ${captureProgress.completed}/${captureProgress.total}…`
+    : snapshotsLoading
+      ? 'Loading saved previews…'
+      : !currentUserId
+        ? 'Saved previews are shared. Automatic capture runs when a signed-in visitor opens this page.'
+        : uncapturedVisibleSites.length > 0
+          ? `Automatically saving up to ${Math.min(uncapturedVisibleSites.length, PAGE_SIZE)} missing previews on this page.`
+          : `All ${visibleSites.length} previews on this page are saved.`;
 
   if (loading) {
     return (
