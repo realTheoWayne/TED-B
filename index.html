@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Blink App</title>
       <!-- CRITICAL: DO NOT REMOVE/MODIFY THIS COMMENT OR THE SCRIPT BELOW -->
-        <!-- BLINK_PICKER_RUNTIME_V2:d74d75e6c99e -->
+        <!-- BLINK_PICKER_RUNTIME_V2:239848ad2892 -->
     <script>(function(){
   'use strict';
   // ---- version handshake ----
@@ -17,12 +17,15 @@
   // a feature on stale projects.
   if (window.__blinkPickerInstalled) return;
   window.__blinkPickerInstalled = true;
-  window.__blinkPickerVersion = '2.0.0';
+  window.__blinkPickerVersion = '2.1.0';
 
   var active = false;
   var hoverEl = null;
   var hoverOutline = null;
-  var stampQueued = false;
+  var styleInstalled = false;
+  // Runtime identity lives here, never in the DOM: element → rt: id, and rt: id → element.
+  var runtimeIds = new WeakMap();
+  var elementsById = Object.create(null);
   // Inline-edit state — single-click-to-edit (Figma / Webflow / Replit pattern).
   // A plain click on inline-editable text selects AND enters caret edit in one
   // step (text-input feel); modifier-clicks stay multi-select. No second click.
@@ -30,11 +33,32 @@
   // and Escape-toggles, and the click handler routes clicks inside the editing
   // element through native browser caret behaviour.
   var inlineEditing = null;
+  // Origin of the editor that last messaged us; every post goes there (null = post nothing).
+  var editorOrigin = null;
+  var EDITOR_ORIGINS = ["https://blink.new","https://staging.blink.new","https://dev.blink.new","https://blink-preview.vercel.app","https://blink-staging.vercel.app","http://localhost:3000"];
+  var TEAM_PREVIEW_ORIGIN = new RegExp("^https:\\/\\/[a-z0-9-]+-blinkdotnew\\.vercel\\.app$");
+  var LOCAL_EDITOR_ORIGIN = new RegExp("^http:\\/\\/localhost:\\d+$");
   var INLINE_EDIT_DENY = { INPUT: 1, TEXTAREA: 1, SELECT: 1, OPTION: 1, SCRIPT: 1, STYLE: 1, SVG: 1, PATH: 1, IMG: 1, CODE: 1, PRE: 1 };
   var INLINE_EDIT_SINGLE_LINE = { H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1, BUTTON: 1, A: 1, LABEL: 1, SUMMARY: 1 };
 
   var COMPUTED_KEYS = ['color','backgroundColor','fontSize','fontWeight','fontFamily','textAlign','textDecorationLine','borderColor','borderWidth','borderStyle','borderRadius','opacity','display','paddingTop','paddingRight','paddingBottom','paddingLeft','marginTop','marginRight','marginBottom','marginLeft','width','height','gap','flexDirection','justifyContent','alignItems','lineHeight','letterSpacing'];
   var SKIP_TAGS = { SCRIPT: 1, STYLE: 1, LINK: 1, META: 1, HEAD: 1, NOSCRIPT: 1, TEMPLATE: 1 };
+  // Crosshair while picking, text caret while inline-editing a contenteditable.
+  // The [contenteditable="true"] rule on the editing element + descendants
+  // overrides the global crosshair so the user sees the right affordance.
+  var PICKER_CSS = '.blink-picker-active, .blink-picker-active * { cursor: crosshair !important; }' +
+    ' html.blink-picker-active [data-blink-edit-hover] { cursor: text !important; }' +
+    ' html.blink-picker-active [contenteditable="true"], html.blink-picker-active [contenteditable="true"] * { cursor: text !important; }' +
+    // Inline text edit: a distinct thin solid border around the
+    // contenteditable element (Figma parity — different from hover ring).
+    ' html.blink-picker-editing [contenteditable="true"] { outline: 1.5px solid rgba(59,130,246,0.95) !important; outline-offset: 1px !important; border-radius: 2px !important; }' +
+    // Neutralize the LEGACY widget.js picker's chrome. widget.js loads from
+    // blink.new/widget.js (can't be gated in local previews), and its hover
+    // tooltip (.gpt-selector-tooltip — the stray "h1" label) + dashed hover/
+    // selected outlines double up with this v2 picker and the parent's Figma
+    // selection overlay. v2 is the source of truth, so hide the legacy chrome.
+    ' .gpt-selector-tooltip { display: none !important; }' +
+    ' [data-blnk-hovered]::before, [data-blnk-selected]::before { display: none !important; }';
 
   // ---- short hash (CRC32-ish, 8-char hex) ----
   function shortHash(s){
@@ -66,51 +90,58 @@
     }
   }
 
-  function stampElement(el){
-    if (!el || el.nodeType !== 1) return;
-    if (SKIP_TAGS[el.tagName]) return;
-    if (el.dataset && el.dataset.blnkId) return; // idempotent — leave build-time or prior runtime IDs alone
-    try { el.setAttribute('data-blnk-id', makeRuntimeId(el)); } catch (err) {
-      try { console.error('[blink-picker] stampElement failed', err); } catch (e2) {}
-    }
+  // ---- runtime identity (memory only) ----
+  // A stale rt: attribute (markup copied from an old stamped DOM) is not a build id.
+  function buildIdOf(el){
+    var v = el.getAttribute('data-blnk-id');
+    return v && v.slice(0, 3) !== 'rt:' ? v : null;
   }
 
-  function walkAndStamp(root){
-    if (!root) return;
-    stampElement(root);
-    var kids = root.children;
-    if (!kids) return;
-    for (var i = 0; i < kids.length; i++) walkAndStamp(kids[i]);
+  // An rt: id is computed on first use and kept for the element's lifetime, so text edits keep it.
+  function idOf(el){
+    var buildId = buildIdOf(el);
+    if (buildId) return buildId;
+    var id = runtimeIds.get(el) || makeRuntimeId(el);
+    rememberRuntimeId(el, id);
+    return id;
   }
 
-  function scheduleStamp(){
-    if (stampQueued) return;
-    stampQueued = true;
-    var run = function(){
-      stampQueued = false;
-      if (document.body) walkAndStamp(document.body);
-    };
-    if (typeof window.requestIdleCallback === 'function') {
-      window.requestIdleCallback(run, { timeout: 200 });
-    } else {
-      setTimeout(run, 50);
-    }
+  function rememberRuntimeId(el, id){
+    runtimeIds.set(el, id);
+    elementsById[id] = el;
   }
 
-  // ---- initial stamp + MutationObserver ----
-  function installStamper(){
-    if (document.body) walkAndStamp(document.body);
-    try {
-      var mo = new MutationObserver(function(muts){
-        for (var i = 0; i < muts.length; i++) {
-          var added = muts[i].addedNodes;
-          if (added && added.length) { scheduleStamp(); return; }
-        }
-      });
-      if (document.body) mo.observe(document.body, { childList: true, subtree: true });
-    } catch (err) {
-      try { console.error('[blink-picker] MutationObserver failed', err); } catch (e2) {}
+  function findById(id){
+    if (typeof id !== 'string' || !id) return null;
+    if (id.slice(0, 3) !== 'rt:') return document.querySelector('[data-blnk-id="' + id.replace(/"/g, '\\"') + '"]');
+    var known = elementsById[id];
+    if (known && known.isConnected) return known;
+    if (known) delete elementsById[id];
+    return document.body ? findRuntimeMatch(document.body, id) : null;
+  }
+
+  // Document-order walk, so a duplicate rt: id resolves to its first match as before.
+  function findRuntimeMatch(root, id){
+    var match = walkForRuntimeId(root, id);
+    if (match) rememberRuntimeId(match, id);
+    return match;
+  }
+
+  function walkForRuntimeId(node, id){
+    if (isRuntimeCandidate(node, id) && (runtimeIds.get(node) || makeRuntimeId(node)) === id) return node;
+    var kids = node.children;
+    for (var i = 0; kids && i < kids.length; i++) {
+      var hit = walkForRuntimeId(kids[i], id);
+      if (hit) return hit;
     }
+    return null;
+  }
+
+  // Build-tagged elements report their build id, so only their descendants can match an rt: id.
+  // The tag prefix check skips makeRuntimeId for elements of any other tag.
+  function isRuntimeCandidate(el, id){
+    if (SKIP_TAGS[el.tagName] || buildIdOf(el)) return false;
+    return id.indexOf('rt:' + el.tagName.toLowerCase() + ':') === 0;
   }
 
   // ---- React fiber owner resolution ----
@@ -145,13 +176,24 @@
   }
 
   // ---- message bridge ----
+  function isEditorOrigin(o){
+    return typeof o === 'string' && (EDITOR_ORIGINS.indexOf(o) !== -1 || TEAM_PREVIEW_ORIGIN.test(o) || LOCAL_EDITOR_ORIGIN.test(o));
+  }
+
+  function postToEditor(msg){
+    if (!editorOrigin) return;
+    window.parent.postMessage(msg, editorOrigin);
+  }
+
   window.addEventListener('message', function(ev){
+    if (!isEditorOrigin(ev.origin)) return;
     var msg = ev.data;
     if (!msg || typeof msg !== 'object') return;
+    editorOrigin = ev.origin;
     if (msg.type === 'TOGGLE_SELECTOR') setActive(!!msg.payload);
     else if (msg.type === 'SET_ELEMENT_ATTRS') applyAttrs(msg.payload);
     else if (msg.type === 'RESET_INLINE_STYLES') resetInlineStyles(msg.payload);
-    else if (msg.type === 'PICKER_HEALTH_CHECK') replyAlive(msg, ev.source);
+    else if (msg.type === 'PICKER_HEALTH_CHECK') replyAlive(msg, ev.source, ev.origin);
   });
 
   // Revert the iframe DOM after an undo/redo on the parent side. Caller passes
@@ -161,8 +203,7 @@
   function resetInlineStyles(payload){
     try {
       if (!payload || typeof payload !== 'object' || typeof payload.id !== 'string') return;
-      var sel = '[data-blnk-id="' + payload.id.replace(/"/g, '\\"') + '"]';
-      var el = document.querySelector(sel);
+      var el = findById(payload.id);
       if (!el) return;
       var props = Array.isArray(payload.properties) ? payload.properties : null;
       if (props && props.length > 0) {
@@ -177,14 +218,14 @@
 
   // Health check: lets PreviewPanel verify the picker is wired before activating
   // design mode. Replies on next microtask so the parent's listener is attached.
-  function replyAlive(msg, source){
+  function replyAlive(msg, source, origin){
     try {
       var target = source || window.parent;
       target.postMessage({
         type: 'PICKER_ALIVE',
         nonce: (msg && msg.nonce) || null,
-        version: window.__blinkPickerVersion || '2.0.0',
-      }, '*');
+        version: window.__blinkPickerVersion || '2.1.0',
+      }, origin);
     } catch (err) {
       try { console.error('[blink-picker] replyAlive failed', err); } catch (e2) {}
     }
@@ -193,6 +234,7 @@
   function setActive(next){
     if (active === next) return;
     active = next;
+    if (active) installStyle();
     document.documentElement.classList.toggle('blink-picker-active', active);
     if (!active) {
       // Bail any in-progress inline edit so the contentEditable + caret don't
@@ -252,8 +294,7 @@
       var ids = Array.from(selectedIds);
       for (var i = 0; i < ids.length; i++) {
         var id = ids[i];
-        var sel = '[data-blnk-id="' + id.replace(/"/g, '\\"') + '"]';
-        var el = document.querySelector(sel);
+        var el = findById(id);
         if (!el) { selectedIds.delete(id); continue; }
         var r = el.getBoundingClientRect();
         var prev = lastSentRects[id];
@@ -263,7 +304,7 @@
         updates.push({ id: id, rect: rect });
       }
       if (updates.length === 0) return;
-      window.parent.postMessage({ type: 'ELEMENT_RECT_UPDATE', payload: { updates: updates, viewportWidth: window.innerWidth } }, '*');
+      postToEditor({ type: 'ELEMENT_RECT_UPDATE', payload: { updates: updates, viewportWidth: window.innerWidth } });
     } catch (err) {
       try { console.error('[blink-picker] emitRectUpdates failed', err); } catch (e2) {}
     }
@@ -277,7 +318,7 @@
   document.addEventListener('mouseover', function(e){
     if (!active) return;
     if (inlineEditing) return; // hover ring would compete with the caret
-    var el = closestTagged(e.target);
+    var el = closestSelectable(e.target);
     if (el === hoverEl) return;
     setEditHover(hoverEl, el); // editable text shows an I-beam before you click
     hoverEl = el;
@@ -294,7 +335,7 @@
       exitInlineEdit(inlineEditing.el, true);
       // Fall through — handle this click as a fresh selection.
     }
-    var el = closestTagged(e.target);
+    var el = closestSelectable(e.target);
     if (!el) return;
     e.preventDefault();
     e.stopPropagation();
@@ -324,14 +365,15 @@
     // whole picker off here.
     if (inlineEditing) return;
     if (e.key === 'Escape') {
-      try { window.parent.postMessage({ type: 'TOGGLE_PICK_AND_EDIT_REQUESTED' }, '*'); } catch (err) {}
+      try { postToEditor({ type: 'TOGGLE_PICK_AND_EDIT_REQUESTED' }); } catch (err) {}
     }
   }, true);
 
-  function closestTagged(target){
+  // Nearest selectable element: any element except SKIP_TAGS and <html> (ids come from idOf).
+  function closestSelectable(target){
     var el = target;
     while (el && el !== document.documentElement) {
-      if (el.dataset && el.dataset.blnkId) return el;
+      if (el.nodeType === 1 && !SKIP_TAGS[el.tagName]) return el;
       el = el.parentElement;
     }
     return null;
@@ -361,7 +403,7 @@
 
   function emitElementClicked(el, modifiers){
     try {
-      var id = el.dataset.blnkId;
+      var id = idOf(el);
       var loc = parseIdLocation(id);
       var r = el.getBoundingClientRect();
       var classes = el.classList ? Array.prototype.slice.call(el.classList) : [];
@@ -389,7 +431,7 @@
         modifiers: modifiers || { meta: false, shift: false },
       };
       if (fiberSource) payload.fiberSource = fiberSource;
-      window.parent.postMessage({ type: 'ELEMENT_CLICKED', payload: payload }, '*');
+      postToEditor({ type: 'ELEMENT_CLICKED', payload: payload });
       // Start tracking this element's rect so scroll/resize keeps the parent
       // UI (outline, pill, popup anchor, prompt chip) glued to the element.
       trackSelectedId(id);
@@ -478,12 +520,10 @@
     return null;
   }
 
-  function buildSelector(payload){
-    if (typeof payload.id === 'string') {
-      return '[data-blnk-id="' + payload.id.replace(/"/g, '\\"') + '"]';
-    }
+  function resolveAttrsTarget(payload){
+    if (typeof payload.id === 'string') return findById(payload.id);
     if (payload.id && payload.id.path) {
-      return '[data-blnk-id^="' + payload.id.path.replace(/"/g, '\\"') + ':"]';
+      return document.querySelector('[data-blnk-id^="' + payload.id.path.replace(/"/g, '\\"') + ':"]');
     }
     return null;
   }
@@ -491,9 +531,7 @@
   function applyAttrs(payload){
     try {
       if (!payload || typeof payload !== 'object') return;
-      var sel = buildSelector(payload);
-      if (!sel) return;
-      var el = document.querySelector(sel);
+      var el = resolveAttrsTarget(payload);
       if (!el) return;
       var attrs = payload.attrs || {};
       if (attrs.style && typeof attrs.style === 'object') {
@@ -649,48 +687,24 @@
   function postInlineEditMessage(type, el, extras){
     try {
       var payload = {
-        id: el.dataset.blnkId,
+        id: idOf(el),
         tagName: (el.tagName || 'div').toLowerCase(),
         fiberSource: getFiberSource(el),
       };
       if (extras) { for (var k in extras) if (Object.prototype.hasOwnProperty.call(extras, k)) payload[k] = extras[k]; }
-      window.parent.postMessage({ type: type, payload: payload }, '*');
+      postToEditor({ type: type, payload: payload });
     } catch (err) {
       try { console.error('[blink-picker] postInlineEditMessage failed', err); } catch (e2) {}
     }
   }
 
-  // ---- boot: cursor style + stamper ----
+  // ---- cursor style: added on the first activation, never at install ----
   function installStyle(){
+    if (styleInstalled || !document.head) return;
+    styleInstalled = true;
     var style = document.createElement('style');
-    // Crosshair while picking, text caret while inline-editing a contenteditable.
-    // The [contenteditable="true"] rule on the editing element + descendants
-    // overrides the global crosshair so the user sees the right affordance.
-    style.textContent = '.blink-picker-active, .blink-picker-active * { cursor: crosshair !important; }' +
-      ' html.blink-picker-active [data-blink-edit-hover] { cursor: text !important; }' +
-      ' html.blink-picker-active [contenteditable="true"], html.blink-picker-active [contenteditable="true"] * { cursor: text !important; }' +
-      // Inline text edit: a distinct thin solid border around the
-      // contenteditable element (Figma parity — different from hover ring).
-      ' html.blink-picker-editing [contenteditable="true"] { outline: 1.5px solid rgba(59,130,246,0.95) !important; outline-offset: 1px !important; border-radius: 2px !important; }' +
-      // Neutralize the LEGACY widget.js picker's chrome. widget.js loads from
-      // blink.new/widget.js (can't be gated in local previews), and its hover
-      // tooltip (.gpt-selector-tooltip — the stray "h1" label) + dashed hover/
-      // selected outlines double up with this v2 picker and the parent's Figma
-      // selection overlay. v2 is the source of truth, so hide the legacy chrome.
-      ' .gpt-selector-tooltip { display: none !important; }' +
-      ' [data-blnk-hovered]::before, [data-blnk-selected]::before { display: none !important; }';
-    if (document.head) document.head.appendChild(style);
-  }
-
-  function boot(){
-    installStyle();
-    installStamper();
-  }
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', boot);
-  } else {
-    boot();
+    style.textContent = PICKER_CSS;
+    document.head.appendChild(style);
   }
 })();</script>
     <script src="https://blink.new/widget.js?projectId=tezos-analytics-dashboard-wgjv5o39" type="module"></script>

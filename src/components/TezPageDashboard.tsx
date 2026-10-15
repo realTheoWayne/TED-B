@@ -11,7 +11,9 @@ import {
   History,
   TrendingUp,
   FileCode,
-  Database
+  Database,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 import { 
   Card, 
@@ -43,6 +45,8 @@ import {
 import { tezosService, TezPageSite } from '../lib/tezos';
 import { Skeleton } from './ui/skeleton';
 
+const PAGE_SIZE = 24;
+
 const TezPageDashboard = () => {
   const [sites, setSites] = useState<TezPageSite[]>([]);
   const [stats, setStats] = useState<{ totalSites: number; newSites24h: number | null }>({ totalSites: 0, newSites24h: null });
@@ -51,6 +55,7 @@ const TezPageDashboard = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [page, setPage] = useState(1);
 
   const fetchData = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
@@ -81,8 +86,11 @@ const TezPageDashboard = () => {
 
   const filteredSites = sites.filter(s => 
     s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    s.owner.toLowerCase().includes(searchQuery.toLowerCase())
+    s.owner.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    s.content.toLowerCase().includes(searchQuery.toLowerCase())
   );
+  const pageCount = Math.max(1, Math.ceil(filteredSites.length / PAGE_SIZE));
+  const visibleSites = filteredSites.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   const growthData = stats.totalSites > 0
     ? [{ date: 'Live snapshot', count: stats.totalSites }]
@@ -150,13 +158,13 @@ const TezPageDashboard = () => {
       <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card className="bg-background/50 backdrop-blur-sm border-primary/20">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Domains with Records</CardTitle>
+            <CardTitle className="text-sm font-medium">Live .tez.page Sites</CardTitle>
             <Globe className="h-4 w-4 text-primary" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{stats.totalSites}</div>
             <p className="text-xs text-muted-foreground">
-              Found in the latest live API page
+              Domains with a live web:content_url record
             </p>
           </CardContent>
         </Card>
@@ -174,13 +182,13 @@ const TezPageDashboard = () => {
         </Card>
         <Card className="bg-background/50 backdrop-blur-sm border-primary/20">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Domains with Records</CardTitle>
+            <CardTitle className="text-sm font-medium">Sites loaded</CardTitle>
             <ShieldCheck className="h-4 w-4 text-primary" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.totalSites.toLocaleString()}</div>
+            <div className="text-2xl font-bold">{sites.length.toLocaleString()}</div>
             <p className="text-xs text-muted-foreground">
-              Live records returned by the API
+              Matching live website records
             </p>
           </CardContent>
         </Card>
@@ -190,9 +198,9 @@ const TezPageDashboard = () => {
             <Database className="h-4 w-4 text-accent" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">On-chain</div>
+            <div className="text-2xl font-bold">TzKT</div>
             <p className="text-xs text-muted-foreground">
-              Tezos Domains GraphQL records
+              Filtered by web:content_url
             </p>
           </CardContent>
         </Card>
@@ -201,8 +209,8 @@ const TezPageDashboard = () => {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <Card className="lg:col-span-2 bg-background/50 backdrop-blur-sm overflow-hidden">
           <CardHeader>
-            <CardTitle>Growth Trend</CardTitle>
-            <CardDescription>Domains with records in the latest live API page.</CardDescription>
+            <CardTitle>Live site index</CardTitle>
+            <CardDescription>Current website-record count from TzKT, not a historical growth series.</CardDescription>
           </CardHeader>
           <CardContent className="h-[300px] p-0 pr-4">
             <ResponsiveContainer width="100%" height="100%">
@@ -279,7 +287,7 @@ const TezPageDashboard = () => {
         <CardHeader className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <CardTitle>Directory</CardTitle>
-            <CardDescription>Explore every domain record returned by the live API page.</CardDescription>
+            <CardDescription>Search live domains with a web:content_url record.</CardDescription>
           </div>
           <div className="relative w-full md:w-72">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -287,12 +295,25 @@ const TezPageDashboard = () => {
               placeholder="Search domains..." 
               className="pl-9"
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setPage(1);
+              }}
             />
           </div>
         </CardHeader>
         <CardContent>
-          {viewMode === 'list' ? (
+          {filteredSites.length === 0 ? (
+            <div className="rounded-lg border border-dashed px-6 py-12 text-center">
+              <Globe className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
+              <p className="font-medium">{sites.length === 0 ? 'No .tez.page sites found' : 'No matching sites'}</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {sites.length === 0
+                  ? 'TzKT returned no domains with a web:content_url record.'
+                  : 'Try a different domain, owner address, or website URL.'}
+              </p>
+            </div>
+          ) : viewMode === 'list' ? (
             <Table>
               <TableHeader>
                 <TableRow>
@@ -303,12 +324,12 @@ const TezPageDashboard = () => {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredSites.map((site) => (
+                {visibleSites.map((site) => (
                   <TableRow key={site.name}>
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-2">
                         {site.name}
-                        <Badge variant="outline" className="text-[10px] h-4">.page</Badge>
+                        <Badge variant="outline" className="text-[10px] h-4">.tez.page</Badge>
                       </div>
                     </TableCell>
                     <TableCell className="font-mono text-xs">
@@ -330,7 +351,7 @@ const TezPageDashboard = () => {
             </Table>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {filteredSites.map((site, i) => (
+              {visibleSites.map((site, i) => (
                 <motion.div
                   key={site.name}
                   initial={{ opacity: 0, y: 20 }}
@@ -343,7 +364,7 @@ const TezPageDashboard = () => {
                         <div className="h-12 w-12 rounded-xl bg-primary/5 flex items-center justify-center text-primary group-hover:bg-primary group-hover:text-white transition-all duration-300">
                           <Globe className="h-6 w-6" />
                         </div>
-                        <Badge variant="secondary" className="bg-primary/10 text-primary">On-chain</Badge>
+                        <Badge variant="secondary" className="bg-primary/10 text-primary">.tez.page</Badge>
                       </div>
                       <div>
                         <h3 className="text-lg font-bold group-hover:text-primary transition-colors">{site.name}</h3>
@@ -360,6 +381,22 @@ const TezPageDashboard = () => {
                   </Card>
                 </motion.div>
               ))}
+            </div>
+          )}
+          {filteredSites.length > 0 && (
+            <div className="mt-6 flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm text-muted-foreground">
+                Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, filteredSites.length)} of {filteredSites.length.toLocaleString()} sites
+              </p>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={() => setPage(current => Math.max(1, current - 1))} disabled={page <= 1}>
+                  <ChevronLeft className="mr-1 h-4 w-4" /> Previous
+                </Button>
+                <span className="min-w-16 text-center text-sm text-muted-foreground">{page} / {pageCount}</span>
+                <Button variant="outline" size="sm" onClick={() => setPage(current => Math.min(pageCount, current + 1))} disabled={page >= pageCount}>
+                  Next <ChevronRight className="ml-1 h-4 w-4" />
+                </Button>
+              </div>
             </div>
           )}
         </CardContent>

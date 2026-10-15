@@ -79,6 +79,13 @@ interface DomainConnectionResponse {
   pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
 }
 
+interface TzktWebsiteDomain {
+  name: string;
+  owner?: { address?: string };
+  data?: Record<string, unknown>;
+  firstTime?: string;
+}
+
 const TZKT_API = 'https://api.tzkt.io/v1';
 const TEZOS_DOMAINS_API = 'https://api.tezos.domains/graphql';
 const BUY_CONTRACT = 'KT191reDVKrLxU9rjTSxg53wRqj6zh8pnHgr';
@@ -366,32 +373,35 @@ export const tezosService = {
   },
 
   async getTezPageSites(): Promise<TezPageSite[]> {
-    const snapshot = await fetchDomainSnapshot();
-    return snapshot.domains
-      // The API returns arbitrary domain data (openid, social, web, etc.).
-      // The previous filter only accepted a few guessed key names, so the
-      // three live records counted by the KPI were hidden from the directory.
-      .filter(domain => domain.data.length > 0)
-      .slice(0, 50)
-      .map(domain => {
-        const content = domain.data.find(item => item.key.toLowerCase().startsWith('web:')) || domain.data[0];
-        const value = typeof content.value === 'string' ? content.value : content.rawValue || 'On-chain domain record';
-        return {
-          name: domain.name,
-          content: value,
-          recordKey: content.key,
-          owner: domain.owner,
-          link: `https://${domain.name}.page`,
-          isWebsiteRecord: content.key.toLowerCase().startsWith('web:'),
-        };
-      });
+    const params = new URLSearchParams({
+      'data.web:content_url.null': 'false',
+      limit: '10000',
+      'sort.desc': 'firstTime',
+      select: 'name,owner,data,firstTime',
+    });
+    const domains = await fetchTzktJson<TzktWebsiteDomain[]>(
+      `${TZKT_API}/domains?${params.toString()}`,
+      300_000,
+    );
+
+    return domains
+      .filter(domain => typeof domain.name === 'string' && typeof domain.data?.['web:content_url'] === 'string')
+      .map(domain => ({
+        name: domain.name,
+        content: domain.data?.['web:content_url'] as string,
+        recordKey: 'web:content_url',
+        owner: domain.owner?.address || 'Unknown owner',
+        link: `https://${domain.name}.page`,
+        isWebsiteRecord: true,
+        timestamp: domain.firstTime,
+      }));
   },
 
   async getDecentralizedWebStats(): Promise<{ totalSites: number; newSites24h: number | null }> {
-    const snapshot = await fetchDomainSnapshot();
-    const domainsWithRecords = snapshot.domains.filter(domain => domain.data.length > 0);
+    const params = new URLSearchParams({ 'data.web:content_url.null': 'false' });
+    const totalSites = await fetchTzktJson<number>(`${TZKT_API}/domains/count?${params.toString()}`, 300_000);
     return {
-      totalSites: domainsWithRecords.length,
+      totalSites,
       newSites24h: null,
     };
   },
