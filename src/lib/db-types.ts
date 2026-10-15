@@ -12,6 +12,15 @@ export type AffiliateEventsRow = {
   userId: string | null
 }
 
+export type PageSnapshotsRow = {
+  id: string
+  userId: string
+  domainName: string
+  screenshotUrl: string
+  contentUrl: string
+  capturedAt: string
+}
+
 export type UsersRow = {
   id: string
   email: string

@@ -13,7 +13,9 @@ import {
   FileCode,
   Database,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Camera,
+  CheckCircle2
 } from 'lucide-react';
 import { 
   Card, 
@@ -44,8 +46,13 @@ import {
 } from 'recharts';
 import { tezosService, TezPageSite } from '../lib/tezos';
 import { Skeleton } from './ui/skeleton';
+import { blink } from '../lib/blink';
+import type { PageSnapshotsRow } from '../lib/db-types';
 
 const PAGE_SIZE = 24;
+const pageSnapshots = blink.db.table<PageSnapshotsRow>('page_snapshots');
+
+type SiteSnapshot = Pick<PageSnapshotsRow, 'screenshotUrl' | 'capturedAt'>;
 
 const TezPageDashboard = () => {
   const [sites, setSites] = useState<TezPageSite[]>([]);
@@ -56,6 +63,14 @@ const TezPageDashboard = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [page, setPage] = useState(1);
+  const [snapshots, setSnapshots] = useState<Record<string, SiteSnapshot>>({});
+  const [snapshotsLoading, setSnapshotsLoading] = useState(true);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [capturing, setCapturing] = useState(false);
+  const [captureProgress, setCaptureProgress] = useState({ completed: 0, total: 0 });
+  const [snapshotMessage, setSnapshotMessage] = useState<string | null>(null);
+  const [snapshotError, setSnapshotError] = useState<string | null>(null);
+  const [failedPreviewIds, setFailedPreviewIds] = useState<Set<string>>(() => new Set());
 
   const fetchData = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
@@ -84,6 +99,32 @@ const TezPageDashboard = () => {
     return () => window.clearTimeout(timer);
   }, [fetchData]);
 
+  useEffect(() => {
+    let active = true;
+    const unsubscribe = blink.auth.onAuthStateChanged(state => {
+      if (active) setCurrentUserId(state.user?.id ?? null);
+    });
+    pageSnapshots.list({ limit: 10000, orderBy: { capturedAt: 'desc' } })
+      .then(rows => {
+        if (active) {
+          setSnapshots(Object.fromEntries(rows.map(row => [row.domainName, {
+            screenshotUrl: row.screenshotUrl,
+            capturedAt: row.capturedAt,
+          }])));
+        }
+      })
+      .catch(error => {
+        if (active) setSnapshotError(error instanceof Error ? error.message : 'Could not load saved screenshots');
+      })
+      .finally(() => {
+        if (active) setSnapshotsLoading(false);
+      });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
+
   const filteredSites = sites.filter(s => 
     s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
     s.owner.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -91,6 +132,70 @@ const TezPageDashboard = () => {
   );
   const pageCount = Math.max(1, Math.ceil(filteredSites.length / PAGE_SIZE));
   const visibleSites = filteredSites.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const uncapturedVisibleSites = visibleSites.filter(site => !snapshots[site.name]);
+
+  const captureVisibleSnapshots = async () => {
+    if (!currentUserId) {
+      blink.auth.login(window.location.href);
+      return;
+    }
+    const targets = visibleSites.filter(site => !snapshots[site.name]);
+    if (targets.length === 0) {
+      setSnapshotMessage('Every site on this page already has a saved snapshot.');
+      return;
+    }
+
+    setCapturing(true);
+    setSnapshotMessage(null);
+    setSnapshotError(null);
+    setCaptureProgress({ completed: 0, total: targets.length });
+    let nextIndex = 0;
+    let completed = 0;
+    const failures: string[] = [];
+
+    const worker = async () => {
+      while (nextIndex < targets.length) {
+        const site = targets[nextIndex++];
+        try {
+          const screenshotUrl = await blink.data.screenshot(site.link, { width: 1280, height: 800 });
+          const capturedAt = new Date().toISOString();
+          const row: PageSnapshotsRow = {
+            id: site.name,
+            userId: currentUserId,
+            domainName: site.name,
+            screenshotUrl,
+            contentUrl: site.content,
+            capturedAt,
+          };
+          let savedRow = row;
+          try {
+            await pageSnapshots.create(row);
+          } catch (error) {
+            const existing = await pageSnapshots.get(site.name);
+            if (!existing) throw error;
+            savedRow = existing;
+          }
+          setSnapshots(previous => ({
+            ...previous,
+            [site.name]: { screenshotUrl: savedRow.screenshotUrl, capturedAt: savedRow.capturedAt },
+          }));
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : 'Screenshot capture failed';
+          failures.push(`${site.name}: ${reason}`);
+        } finally {
+          completed += 1;
+          setCaptureProgress({ completed, total: targets.length });
+        }
+      }
+    };
+
+    await Promise.all(Array.from({ length: Math.min(2, targets.length) }, () => worker()));
+    setCapturing(false);
+    if (failures.length) {
+      setSnapshotError(`${failures.length} snapshot${failures.length === 1 ? '' : 's'} could not be captured. ${failures.slice(0, 2).join(' · ')}`);
+    }
+    setSnapshotMessage(`${targets.length - failures.length} of ${targets.length} site snapshots saved. Previews are shared with directory visitors.`);
+  };
 
   const growthData = stats.totalSites > 0
     ? [{ date: 'Live snapshot', count: stats.totalSites }]
@@ -119,9 +224,10 @@ const TezPageDashboard = () => {
             .Page Analytics
           </h1>
           <p className="text-muted-foreground">
-            Live domain records from the Tezos Domains API.
+            Browse live .tez domains with saved, one-time previews of their .tez.page websites.
           </p>
           {dataError && <p className="mt-2 text-sm text-destructive">Live data unavailable: {dataError}</p>}
+          {snapshotError && <p className="mt-2 text-sm text-destructive">Snapshot issue: {snapshotError}</p>}
         </div>
         <div className="flex items-center gap-2">
           <Button 
@@ -287,22 +393,43 @@ const TezPageDashboard = () => {
         <CardHeader className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <CardTitle>Directory</CardTitle>
-            <CardDescription>Search live domains with a web:content_url record.</CardDescription>
+            <CardDescription>
+              {snapshotsLoading ? 'Loading saved previews…' : `${Object.keys(snapshots).length.toLocaleString()} one-time previews saved`}. Search live website records and browse the captured pages.
+            </CardDescription>
           </div>
-          <div className="relative w-full md:w-72">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input 
-              placeholder="Search domains..." 
-              className="pl-9"
-              value={searchQuery}
-              onChange={(e) => {
-                setSearchQuery(e.target.value);
-                setPage(1);
-              }}
-            />
+          <div className="flex w-full flex-col gap-2 md:w-auto md:flex-row md:items-center">
+            <div className="relative w-full md:w-72">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input 
+                placeholder="Search domains..." 
+                className="pl-9"
+                value={searchQuery}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setPage(1);
+                }}
+              />
+            </div>
+            <Button onClick={currentUserId ? captureVisibleSnapshots : () => blink.auth.login(window.location.href)} disabled={capturing || snapshotsLoading || loading} className="shrink-0">
+              {capturing ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : uncapturedVisibleSites.length === 0 ? <CheckCircle2 className="mr-2 h-4 w-4" /> : <Camera className="mr-2 h-4 w-4" />}
+              {capturing
+                ? `Capturing ${captureProgress.completed}/${captureProgress.total}`
+                : !currentUserId
+                  ? 'Sign in to capture'
+                  : uncapturedVisibleSites.length === 0
+                    ? 'Page previews saved'
+                    : `Capture ${uncapturedVisibleSites.length} previews`}
+            </Button>
           </div>
         </CardHeader>
         <CardContent>
+          {capturing && (
+            <div className="mb-4 rounded-lg border bg-muted/30 p-3" role="status" aria-live="polite">
+              <p className="text-sm font-medium">Capturing and saving screenshots for this directory page…</p>
+              <progress className="mt-2 w-full accent-primary" value={captureProgress.completed} max={captureProgress.total} />
+            </div>
+          )}
+          {snapshotMessage && <p className="mb-4 text-sm text-muted-foreground" role="status">{snapshotMessage}</p>}
           {filteredSites.length === 0 ? (
             <div className="rounded-lg border border-dashed px-6 py-12 text-center">
               <Globe className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
@@ -317,6 +444,7 @@ const TezPageDashboard = () => {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead>Preview</TableHead>
                   <TableHead>Domain</TableHead>
                   <TableHead>Owner</TableHead>
                   <TableHead>Record</TableHead>
@@ -326,6 +454,24 @@ const TezPageDashboard = () => {
               <TableBody>
                 {visibleSites.map((site) => (
                   <TableRow key={site.name}>
+                    <TableCell>
+                      <div className="h-14 w-24 overflow-hidden rounded-md bg-muted">
+                        {snapshots[site.name] && !failedPreviewIds.has(site.name) ? (
+                          <img
+                            src={snapshots[site.name].screenshotUrl}
+                            alt={`Saved screenshot of ${site.name}.page`}
+                            loading="lazy"
+                            className="h-full w-full object-cover object-top"
+                            onError={() => setFailedPreviewIds(previous => {
+                              if (previous.has(site.name)) return previous;
+                              const next = new Set(previous);
+                              next.add(site.name);
+                              return next;
+                            })}
+                          />
+                        ) : <div className="flex h-full items-center justify-center"><Camera className="h-5 w-5 text-muted-foreground" /></div>}
+                      </div>
+                    </TableCell>
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-2">
                         {site.name}
@@ -360,6 +506,27 @@ const TezPageDashboard = () => {
                 >
                   <Card className="group hover:border-primary/40 transition-all duration-300 hover:shadow-lg hover:shadow-primary/5">
                     <CardContent className="p-5 flex flex-col justify-between h-full space-y-4">
+                      <div className="aspect-[16/10] w-full overflow-hidden rounded-lg bg-muted">
+                        {snapshots[site.name] && !failedPreviewIds.has(site.name) ? (
+                          <img
+                            src={snapshots[site.name].screenshotUrl}
+                            alt={`Saved screenshot of ${site.name}.page`}
+                            loading="lazy"
+                            className="h-full w-full object-cover object-top transition-transform duration-300 group-hover:scale-[1.02]"
+                            onError={() => setFailedPreviewIds(previous => {
+                              if (previous.has(site.name)) return previous;
+                              const next = new Set(previous);
+                              next.add(site.name);
+                              return next;
+                            })}
+                          />
+                        ) : (
+                          <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-muted-foreground">
+                            <Camera className="h-7 w-7" />
+                            <span className="text-xs">{failedPreviewIds.has(site.name) ? 'Saved preview unavailable' : 'No snapshot yet'}</span>
+                          </div>
+                        )}
+                      </div>
                       <div className="flex justify-between items-start">
                         <div className="h-12 w-12 rounded-xl bg-primary/5 flex items-center justify-center text-primary group-hover:bg-primary group-hover:text-white transition-all duration-300">
                           <Globe className="h-6 w-6" />
