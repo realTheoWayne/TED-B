@@ -431,16 +431,10 @@ const TezPageDashboard = () => {
                 }}
               />
             </div>
-            <Button onClick={currentUserId ? captureVisibleSnapshots : () => blink.auth.login(window.location.href)} disabled={capturing || snapshotsLoading || loading} className="shrink-0">
-              {capturing ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : uncapturedVisibleSites.length === 0 ? <CheckCircle2 className="mr-2 h-4 w-4" /> : <Camera className="mr-2 h-4 w-4" />}
-              {capturing
-                ? `Capturing ${captureProgress.completed}/${captureProgress.total}`
-                : !currentUserId
-                  ? 'Sign in to capture'
-                  : uncapturedVisibleSites.length === 0
-                    ? 'Page previews saved'
-                    : `Capture ${uncapturedVisibleSites.length} previews`}
-            </Button>
+            <div className="flex min-h-10 max-w-xl items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground" role="status" aria-live="polite">
+              {capturing ? <RefreshCw className="h-4 w-4 shrink-0 animate-spin text-primary" /> : <Camera className="h-4 w-4 shrink-0 text-primary" />}
+              <span>{snapshotStatus}</span>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
